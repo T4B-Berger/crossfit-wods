@@ -5,7 +5,15 @@ import unittest
 
 from bs4 import BeautifulSoup
 
-from crossfit_wods.parse import extract_wod_block, parse_one
+from crossfit_wods.parse import (
+    detect_movements,
+    detect_workout_format,
+    extract_measurements,
+    extract_wod_block,
+    parse_one,
+    score_wod_block,
+    select_main_wod_block,
+)
 from crossfit_wods.scraper import (
     classify_page,
     extract_main_text_from_html,
@@ -291,6 +299,58 @@ class ConservativeIngestionTests(unittest.TestCase):
         soup = BeautifulSoup(html, "lxml")
         text = extract_main_text_from_html(html)
         self.assertEqual(classify_page(soup, text), "wod")
+
+    def test_movement_alias_detection(self) -> None:
+        movements = detect_movements("5 rounds for time of: 10 handstand push-ups and 15 wall ball shots")
+        norms = {entry["movement_norm"] for entry in movements}
+        self.assertIn("handstand push-up", norms)
+        self.assertIn("wall-ball shot", norms)
+
+    def test_measurement_extraction_with_si_normalization(self) -> None:
+        entities = extract_measurements("Deadlift 225 lb, Run 400 m, 21 reps")
+        load = next(e for e in entities if e.get("kind") == "load")
+        distance = next(e for e in entities if e.get("kind") == "distance")
+        reps = next(e for e in entities if e.get("kind") == "reps")
+        self.assertAlmostEqual(load["value_si"], 102.058, places=2)
+        self.assertEqual(load["unit_si"], "kg")
+        self.assertEqual(distance["value_si"], 400.0)
+        self.assertEqual(distance["unit_si"], "m")
+        self.assertEqual(reps["unit_si"], "reps")
+
+    def test_workout_format_inference_strength_skill(self) -> None:
+        fmt = detect_workout_format("Build to a heavy snatch. 5-5-5-5-5")
+        self.assertEqual(fmt, "strength_skill")
+
+    def test_wod_block_scorer_rejects_comment_like_block(self) -> None:
+        score_comment, _ = score_wod_block("Yesterday I did this RX. Reply")
+        score_wod, _ = score_wod_block("8 rounds for time of:\n5 power cleans (135 lb)\n7 burpees")
+        self.assertLess(score_comment, score_wod)
+
+    def test_select_main_wod_block_prefers_structured_block_over_teaser(self) -> None:
+        raw_text = (
+            "Today, we have a great challenge for everyone.\n\n"
+            "Workout of the Day\n"
+            "8 rounds for time of:\n"
+            "5 power cleans (135 lb)\n"
+            "7 box jumps\n"
+            "Compare to 2025-04-03"
+        )
+        block, ambiguous, score, reasons = select_main_wod_block(raw_text)
+        self.assertIsNotNone(block)
+        self.assertFalse(ambiguous)
+        self.assertGreater(score, 5)
+        self.assertIn("8 rounds for time", block or "")
+        self.assertTrue(any("measurement" in reason or "format" in reason for reason in reasons))
+
+    def test_parse_one_ambiguous_editorial_stays_needs_review(self) -> None:
+        row = {
+            "wod_date": "2026-03-14",
+            "resolved_url": "https://example.com",
+            "page_type": "wod",
+            "raw_text": "Today, we have a great workout for all levels. Subscribe for more.",
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "needs_review")
 
 
 if __name__ == "__main__":
