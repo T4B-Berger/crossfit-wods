@@ -86,7 +86,7 @@ STRENGTH_KEYWORD_RE = re.compile(
 STRENGTH_SCHEME_RE = re.compile(r"\b(?:1-1-1-1-1|3-3-3-3-3|5-5-5-5-5|\d+\s*sets?\s+of\s+\d+)\b", re.IGNORECASE)
 
 RPE_PATTERN = re.compile(r"\brpe\s*[:\-]?\s*(\d{1,2}(?:\.\d)?)", re.IGNORECASE)
-LOAD_PATTERN = re.compile(r"\b(?P<value>\d+(?:\.\d+)?)\s?(?P<unit>kg|kgs|lb|lbs|pood|poods)\b", re.IGNORECASE)
+LOAD_PATTERN = re.compile(r"\b(?P<value>\d+(?:\.\d+)?)\s*(?:-|–|—)?\s*(?P<unit>kg|kgs|lb|lbs|pood|poods)\b", re.IGNORECASE)
 DISTANCE_PATTERN = re.compile(
     r"\b(?P<value>\d+(?:\.\d+)?)\s*(?:-|–|—)?\s*(?P<unit>m|meter|meters|metre|metres|km|mi|mile|miles|yd|yard|yards|ft|foot|feet|inch|in)\b",
     re.IGNORECASE,
@@ -98,6 +98,15 @@ MEASURABLE_REPS_RE = re.compile(r"\b(?:\d+(?:\s*[-x]\s*\d+)+|\d+)\s*reps?\b", re
 MEASURABLE_TIME_RE = re.compile(r"\b\d+\s*(?:sec(?:ond)?s?|min(?:ute)?s?|hours?)\b|\b\d+\s*:\s*\d+\b", re.IGNORECASE)
 STOP_BLOCK_MARKERS = ("related", "comments", "share", "podcast", "newsletter", "watch")
 EDITORIAL_LINE_MARKERS = ("resource", "resources", "read", "article", "link")
+PRESCRIPTION_STOP_MARKERS = (
+    "stimulus and strategy", "scaling", "intermediate option", "beginner option", "resources",
+    "featured article", "learn more", "watch", "featured", "register", "leaderboard",
+)
+SPECIFICITY_SUPERSEDES = {
+    "box_jump": {"box_jump_over"},
+    "clean": {"power_clean", "hang_power_clean"},
+    "power_clean": {"hang_power_clean"},
+}
 
 
 def split_into_blocks(raw_text: str) -> list[str]:
@@ -239,7 +248,8 @@ def _match_movements_with_spans(segment: str) -> list[dict]:
 
 def infer_rx_fallback(item: dict) -> dict:
     item = dict(item)
-    if item.get("load_value") is not None or item.get("distance_value") is not None:
+    explicit_variant = bool(item.get("female_variant") or item.get("male_variant"))
+    if item.get("load_value") is not None or item.get("distance_value") is not None or explicit_variant:
         item["rx_standard_applied"] = False
         return item
 
@@ -255,14 +265,66 @@ def infer_rx_fallback(item: dict) -> dict:
     return item
 
 
+def extract_prescription_span(text: str) -> str:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    kept: list[str] = []
+    for line in lines:
+        low = line.lower()
+        if any(marker in low for marker in PRESCRIPTION_STOP_MARKERS):
+            break
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _apply_specificity_cleanup(items: list[dict]) -> list[dict]:
+    ids = {item.get("movement_id") for item in items}
+    filtered: list[dict] = []
+    for item in items:
+        movement_id = item.get("movement_id")
+        superseded_by = SPECIFICITY_SUPERSEDES.get(movement_id, set())
+        if ids.intersection(superseded_by):
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _attach_variant(items: list[dict], line: str, sex: str) -> None:
+    load_entry = next((m for m in extract_measurements(line) if m.get("kind") == "load"), None)
+    distance_entry = next((m for m in extract_measurements(line) if m.get("kind") == "distance"), None)
+    variant_payload = {
+        "load_value": load_entry.get("value_source") if load_entry else None,
+        "load_unit": load_entry.get("unit_source") if load_entry else None,
+        "load_value_si": load_entry.get("value_si") if load_entry else None,
+        "load_unit_si": load_entry.get("unit_si") if load_entry else None,
+        "distance_value": distance_entry.get("value_source") if distance_entry else None,
+        "distance_unit": distance_entry.get("unit_source") if distance_entry else None,
+        "distance_value_si": distance_entry.get("value_si") if distance_entry else None,
+        "distance_unit_si": distance_entry.get("unit_si") if distance_entry else None,
+    }
+    for item in items:
+        implement = item.get("implement")
+        if implement == "barbell" and variant_payload["load_value"] is not None:
+            item[f"{sex}_variant"] = variant_payload
+        if implement == "box" and variant_payload["distance_value"] is not None:
+            item[f"{sex}_variant"] = variant_payload
+
+
 def extract_ordered_movements(text: str) -> list[dict]:
     items: list[dict] = []
     order_index = 1
-    structure = parse_structure_metadata(text)
-    for line in [ln.strip() for ln in text.splitlines() if ln.strip()]:
+    span_text = extract_prescription_span(text)
+    structure = parse_structure_metadata(span_text)
+    for line in [ln.strip() for ln in span_text.splitlines() if ln.strip()]:
         if COMMENT_BLOCK_RE.search(line):
             continue
         if line.lower() in {"workout of the day", "rest day"}:
+            continue
+        low = line.lower()
+        if low.startswith("♀") or low.startswith("women") or low.startswith("female"):
+            _attach_variant(items, line, "female")
+            continue
+        if low.startswith("♂") or low.startswith("men") or low.startswith("male"):
+            _attach_variant(items, line, "male")
             continue
         line_measurements = extract_measurements(line)
         load_entry = next((m for m in line_measurements if m.get("kind") == "load"), None)
@@ -325,10 +387,15 @@ def extract_ordered_movements(text: str) -> list[dict]:
                         entry["duration_seconds"] = val * 60
                     else:
                         entry["duration_seconds"] = val
-                entry = infer_rx_fallback(entry)
                 items.append(entry)
                 order_index += 1
-    return items
+
+    compact = _apply_specificity_cleanup(items)
+    for item in compact:
+        infered = infer_rx_fallback(item)
+        item.clear()
+        item.update(infered)
+    return compact
 
 
 def extract_title(text: str) -> str | None:

@@ -502,10 +502,36 @@ class ConservativeIngestionTests(unittest.TestCase):
         self.assertEqual(items[0]["rounds"], 8)
         self.assertEqual(len(items), 2)
 
+    def test_2026_04_03_style_compact_output_with_variants(self) -> None:
+        text = (
+            "Workout of the Day\n"
+            "8 rounds for time of:\n"
+            "5 box jump-overs\n"
+            "5 hang power cleans\n"
+            "♀ 155-lb barbell and a 24-inch box\n"
+            "♂ 225-lb barbell and a 30-inch box\n"
+            "Stimulus and Strategy\n"
+            "Long explanatory prose mentioning clean and box jump"
+        )
+        items = extract_ordered_movements(text)
+        ids = [item["movement_id"] for item in items]
+        self.assertEqual(ids, ["box_jump_over", "hang_power_clean"])
+        self.assertEqual(len(items), 2)
+        self.assertIn("female_variant", items[0])
+        self.assertIn("male_variant", items[1])
+        self.assertFalse(items[0]["rx_standard_applied"])
+
     def test_extract_ordered_movements_strength_skill_sequence(self) -> None:
         items = extract_ordered_movements("Every 5 minutes for 7 sets:\n3 push presses\n2 push jerks\n1 split jerk")
         ids = [item["movement_id"] for item in items]
         self.assertEqual(ids, ["push_press", "push_jerk", "split_jerk"])
+
+    def test_2026_03_23_style_compact_strength_skill_sequence(self) -> None:
+        text = "Every 5 minutes for 7 sets:\n3 push presses\n2 push jerks\n1 split jerk\nLearn the Movement"
+        items = extract_ordered_movements(text)
+        self.assertEqual(len(items), 3)
+        self.assertTrue(all(item.get("sets") == 7 for item in items))
+        self.assertTrue(all(item.get("interval_minutes") == 5.0 for item in items))
 
     def test_specificity_beats_generic_clean_and_box(self) -> None:
         items = extract_ordered_movements("5 box jump-overs and 5 hang power cleans")
@@ -558,6 +584,13 @@ class ConservativeIngestionTests(unittest.TestCase):
         items = extract_ordered_movements("Box jump 24 in")
         self.assertFalse(items[0]["rx_standard_applied"])
         self.assertEqual(items[0]["distance_unit"], "in")
+
+    def test_strict_prescription_span_excludes_stimulus_prose(self) -> None:
+        items = extract_ordered_movements(
+            "5 rounds for time of:\n10 burpees\n200 m run\nStimulus and Strategy\nDo strict pull-up and clean drills"
+        )
+        ids = [item["movement_id"] for item in items]
+        self.assertEqual(ids, ["burpee", "run"])
 
 
 if __name__ == "__main__":
