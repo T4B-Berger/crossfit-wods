@@ -11,6 +11,7 @@ from crossfit_wods.scraper import (
     extract_main_text_from_html,
     explain_main_text_choice,
     is_comment_like_text,
+    is_teaser_like_text,
 )
 
 
@@ -225,6 +226,71 @@ class ConservativeIngestionTests(unittest.TestCase):
     def test_comment_like_text_detection(self) -> None:
         self.assertTrue(is_comment_like_text("Didn't have a rope climb, so I modified the program. Reply"))
         self.assertFalse(is_comment_like_text("Workout of the Day\n8 rounds for time of:\n5 pull-ups\n10 push-ups"))
+
+    def test_structured_extraction_rejects_social_meta_teaser_when_richer_body_exists(self) -> None:
+        html = """
+        <html><body>
+          <script type="application/json">
+            {
+              "pages": {
+                "socialMetaData": {
+                  "description": "Today, we have taller box jumps paired with heavy hang power cleans."
+                },
+                "post": {
+                  "content": "Workout of the Day\\n8 rounds for time of:\\n5 hang power cleans (135 lb)\\n7 box jumps\\nCompare to 2025-04-03"
+                }
+              }
+            }
+          </script>
+        </body></html>
+        """
+        info = explain_main_text_choice(html)
+        text = extract_main_text_from_html(html)
+        self.assertEqual(info["source_type"], "structured_json")
+        self.assertIn("post.content", info["selector"])
+        self.assertIn("8 rounds for time", text)
+        self.assertNotIn("Today, we have", text)
+
+    def test_dom_workout_wins_over_structured_teaser(self) -> None:
+        html = """
+        <html><body>
+          <script type="application/json">
+            {"socialMetaData": {"description": "Today, we have a fast sprint workout."}}
+          </script>
+          <main>
+            <article class="entry-content">
+              <h2>Workout of the Day</h2>
+              <p>5 rounds for time of:</p>
+              <p>400-meter run</p>
+              <p>15 burpees</p>
+            </article>
+          </main>
+        </body></html>
+        """
+        info = explain_main_text_choice(html)
+        text = extract_main_text_from_html(html)
+        self.assertEqual(info["source_type"], "dom")
+        self.assertIn("5 rounds for time", text)
+        self.assertNotIn("Today, we have", text)
+
+    def test_teaser_like_text_detector(self) -> None:
+        self.assertTrue(is_teaser_like_text("Today, we have a challenging couplet to test pacing."))
+        self.assertFalse(is_teaser_like_text("Workout of the Day\n5 rounds for time of:\n400 m run\n15 burpees"))
+
+    def test_classify_page_marks_structured_prescription_as_wod(self) -> None:
+        html = """
+        <html><body><main>
+          <article>
+            <h2>Workout of the Day</h2>
+            <p>8 rounds for time of:</p>
+            <p>5 hang power cleans (135 lb)</p>
+            <p>7 box jumps</p>
+          </article>
+        </main></body></html>
+        """
+        soup = BeautifulSoup(html, "lxml")
+        text = extract_main_text_from_html(html)
+        self.assertEqual(classify_page(soup, text), "wod")
 
 
 if __name__ == "__main__":

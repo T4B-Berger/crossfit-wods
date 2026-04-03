@@ -20,6 +20,7 @@ EDITORIAL_MARKERS = ("crossfit games", "nutrition", "podcast", "article", "opini
 WOD_STRUCTURE_RE = re.compile(r"(^|\s)(\d+(?:\s*[-x]\s*\d+)+|\d+\s*rounds?)", re.IGNORECASE)
 MEASURABLE_REPS_RE = re.compile(r"\b(?:\d+(?:\s*[-x]\s*\d+)+|\d+)\s*reps?\b", re.IGNORECASE)
 MEASURABLE_TIME_RE = re.compile(r"\b\d+\s*(?:sec(?:ond)?s?|min(?:ute)?s?|hours?)\b|\b\d+\s*:\s*\d+\b", re.IGNORECASE)
+MEASURABLE_LOAD_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:kg|kgs|lb|lbs)\b", re.IGNORECASE)
 MEASURABLE_DISTANCE_RE = re.compile(
     r"\b\d+(?:\.\d+)?\s*(?:-|–|—)?\s*(?:m|meter|meters|metre|metres|km|mi|mile|miles|yd|yard|yards|ft|foot|feet)\b",
     re.IGNORECASE,
@@ -60,6 +61,14 @@ FIRST_PERSON_MARKERS = (" i ", " i've ", " i'm ", " my ", " we ", " our ")
 STRUCTURED_TEXT_KEYS = {
     "articlebody", "description", "body", "content", "text", "workout", "wod", "post", "entry", "blocks"
 }
+STRUCTURED_META_PATH_TOKENS = (
+    "socialmetadata", "socialsharing", "description", "seo", "meta", "opengraph", "twitter", "facebook"
+)
+NUMERIC_PRESCRIPTION_RE = re.compile(
+    r"\b(?:\d+\s*(?:reps?|rounds?|kg|lb|lbs|m|meters?|cal|minutes?|secs?|time\s*cap)|\d+(?:\s*[-x]\s*\d+)+)\b",
+    re.IGNORECASE,
+)
+TEASER_LEAD_RE = re.compile(r"^\s*(today\b|in this workout\b|today,\s*we\s+have\b)", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -126,6 +135,29 @@ def is_comment_like_text(text: str) -> bool:
     return bool(_comment_like_reasons(text))
 
 
+def _teaser_like_reasons(text: str) -> list[str]:
+    stripped = text.strip()
+    low = stripped.lower()
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    reasons: list[str] = []
+
+    has_wod_marker = any(marker in low for marker in STRONG_WOD_TEXT_MARKERS)
+    has_numeric_structure = bool(NUMERIC_PRESCRIPTION_RE.search(stripped))
+
+    if len(lines) <= 2 and len(stripped) <= 240:
+        reasons.append("short single-paragraph candidate")
+    if TEASER_LEAD_RE.search(stripped):
+        reasons.append("teaser-style lead sentence")
+    if not has_numeric_structure and not has_wod_marker:
+        reasons.append("no prescription structure")
+
+    return reasons
+
+
+def is_teaser_like_text(text: str) -> bool:
+    return bool(_teaser_like_reasons(text))
+
+
 def _describe_tag(tag: Tag) -> str:
     if tag.get("id"):
         return f"{tag.name}#{tag.get('id')}"
@@ -160,6 +192,11 @@ def _score_candidate(tag: Tag, text: str) -> tuple[int, list[str]]:
         score += min(6, len(short_lines) // 2)
         reasons.append("has structured short lines")
 
+    numeric_hits = len(NUMERIC_PRESCRIPTION_RE.findall(text))
+    if numeric_hits:
+        score += min(10, numeric_hits * 2)
+        reasons.append(f"numeric prescriptions={numeric_hits}")
+
     negative_hits = sum(1 for marker in NEGATIVE_TEXT_MARKERS if marker in low)
     if negative_hits:
         score -= negative_hits * 4
@@ -173,6 +210,15 @@ def _score_candidate(tag: Tag, text: str) -> tuple[int, list[str]]:
     if comment_reasons:
         score -= 20
         reasons.extend(comment_reasons)
+
+    teaser_reasons = _teaser_like_reasons(text)
+    if teaser_reasons:
+        score -= 12
+        reasons.extend(teaser_reasons)
+
+    if len(text) >= 300:
+        score += 4
+        reasons.append("richer body length")
 
     return score, reasons
 
@@ -281,7 +327,8 @@ def _parse_json_blobs(soup: BeautifulSoup) -> list[tuple[str, object]]:
 
 
 def select_best_text_source(html: str) -> dict:
-    rejected: list[dict[str, str | int]] = []
+    rejected: list[dict[str, str | int | bool]] = []
+    all_candidates: list[dict[str, str | int | bool]] = []
     soup = BeautifulSoup(html, "lxml")
 
     best_text = ""
@@ -294,6 +341,24 @@ def select_best_text_source(html: str) -> dict:
     for blob_label, payload in _parse_json_blobs(soup):
         for path, text in _extract_json_candidates(payload, blob_label):
             score, reasons = _score_text_candidate(text)
+            path_low = path.lower()
+            if any(token in path_low for token in STRUCTURED_META_PATH_TOKENS):
+                score -= 20
+                reasons.append("metadata/teaser path penalty")
+            teaser_like = is_teaser_like_text(text)
+            if teaser_like and len(text) < 280:
+                score -= 8
+                reasons.append("teaser-like text penalty")
+
+            candidate = {
+                "source": "structured_json",
+                "locator": path,
+                "score": score,
+                "reason": "; ".join(reasons),
+                "length": len(text),
+                "teaser_like": teaser_like,
+            }
+            all_candidates.append(candidate)
             if score > best_score:
                 best_text = text
                 best_score = score
@@ -301,7 +366,7 @@ def select_best_text_source(html: str) -> dict:
                 best_locator = path
                 best_rationale = "; ".join(reasons) if reasons else "structured candidate"
             else:
-                rejected.append({"source": "structured_json", "locator": path, "score": score, "reason": "; ".join(reasons)})
+                rejected.append(candidate)
 
     # Layer B: DOM candidate fallback.
     dom_soup = BeautifulSoup(html, "lxml")
@@ -311,6 +376,16 @@ def select_best_text_source(html: str) -> dict:
         if len(text) < 20:
             continue
         score, reasons = _score_candidate(tag, text)
+        teaser_like = is_teaser_like_text(text)
+        candidate = {
+            "source": "dom",
+            "locator": label,
+            "score": score,
+            "reason": "; ".join(reasons),
+            "length": len(text),
+            "teaser_like": teaser_like,
+        }
+        all_candidates.append(candidate)
         if score > best_score:
             best_text = text
             best_score = score
@@ -318,7 +393,7 @@ def select_best_text_source(html: str) -> dict:
             best_locator = label
             best_rationale = "; ".join(reasons) if reasons else "dom candidate"
         else:
-            rejected.append({"source": "dom", "locator": label, "score": score, "reason": "; ".join(reasons)})
+            rejected.append(candidate)
 
     if not best_text:
         fallback_soup = BeautifulSoup(html, "lxml")
@@ -330,14 +405,22 @@ def select_best_text_source(html: str) -> dict:
         best_rationale = "fallback after candidate miss"
 
     preview = " ".join(best_text.split())[:180]
+    best_teaser_like = is_teaser_like_text(best_text)
+    richer_rejected = [
+        item for item in sorted(rejected, key=lambda x: int(x.get("score", -10_000)), reverse=True)
+        if int(item.get("length", 0)) > len(best_text)
+    ][:5]
     return {
         "source_type": best_source,
         "locator": best_locator,
         "score": best_score,
         "rationale": best_rationale,
+        "why_selected": f"best score among {len(all_candidates)} candidates",
+        "teaser_like": best_teaser_like,
         "preview": preview,
         "text": best_text,
         "rejected": rejected[:40],
+        "richer_rejected": richer_rejected,
     }
 
 
@@ -350,7 +433,10 @@ def explain_main_text_choice(html: str) -> dict[str, str | int | None]:
         "score": details["score"],
         "container": details["locator"],
         "preview": details["preview"],
+        "why_selected": details["why_selected"],
+        "teaser_like": details["teaser_like"],
         "rejected": details["rejected"],
+        "richer_rejected": details["richer_rejected"],
     }
 
 
@@ -372,7 +458,12 @@ def classify_page(soup: BeautifulSoup, text: str) -> str:
     strength_find_hits = len(STRENGTH_FIND_BEST_RE.findall(low))
     strength_best_lift_hits = len(STRENGTH_BEST_LIFT_RE.findall(low))
     strength_reps_hits = len(STRENGTH_REPS_RE.findall(low))
-    measurable_hits = len(MEASURABLE_REPS_RE.findall(low)) + len(MEASURABLE_TIME_RE.findall(low)) + len(MEASURABLE_DISTANCE_RE.findall(low))
+    measurable_hits = (
+        len(MEASURABLE_REPS_RE.findall(low))
+        + len(MEASURABLE_TIME_RE.findall(low))
+        + len(MEASURABLE_DISTANCE_RE.findall(low))
+        + len(MEASURABLE_LOAD_RE.findall(low))
+    )
 
     if rest_hits and format_hits == 0:
         return "rest_day"
