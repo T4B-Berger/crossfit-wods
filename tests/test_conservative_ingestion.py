@@ -9,6 +9,7 @@ from crossfit_wods.parse import (
     detect_movements,
     detect_workout_format,
     extract_measurements,
+    extract_ordered_movements,
     extract_wod_block,
     parse_one,
     score_wod_block,
@@ -303,8 +304,8 @@ class ConservativeIngestionTests(unittest.TestCase):
     def test_movement_alias_detection(self) -> None:
         movements = detect_movements("5 rounds for time of: 10 handstand push-ups and 15 wall ball shots")
         norms = {entry["movement_norm"] for entry in movements}
-        self.assertIn("handstand push-up", norms)
-        self.assertIn("wall-ball shot", norms)
+        self.assertIn("handstand_push_up", norms)
+        self.assertIn("wall_ball", norms)
 
     def test_measurement_extraction_with_si_normalization(self) -> None:
         entities = extract_measurements("Deadlift 225 lb, Run 400 m, 21 reps")
@@ -484,6 +485,60 @@ class ConservativeIngestionTests(unittest.TestCase):
         payload = parse_one(row)
         self.assertEqual(payload["record_status"], "valid_wod")
         self.assertEqual(payload["workout_format"], "strength_skill")
+
+    def test_extract_ordered_movements_for_time_sequence(self) -> None:
+        items = extract_ordered_movements("5 rounds for time of:\n10 thrusters (95 lb)\n200 m run")
+        ids = [item["movement_id"] for item in items]
+        self.assertEqual(ids[:2], ["thruster", "run"])
+        self.assertEqual(items[0]["reps"], 10)
+
+    def test_extract_ordered_movements_strength_skill_sequence(self) -> None:
+        items = extract_ordered_movements("Every 5 minutes for 7 sets:\n3 push presses\n2 push jerks\n1 split jerk")
+        ids = [item["movement_id"] for item in items]
+        self.assertEqual(ids, ["push_press", "push_jerk", "split_jerk"])
+
+    def test_detect_workout_format_emom_amrap_tabata(self) -> None:
+        self.assertEqual(detect_workout_format("EMOM 20: 5 burpees"), "emom")
+        self.assertEqual(detect_workout_format("15-minute AMRAP of 10 pull-ups"), "amrap")
+        self.assertEqual(detect_workout_format("Tabata air squats"), "tabata")
+
+    def test_male_female_variant_load_parsing(self) -> None:
+        items = extract_ordered_movements("Wall-ball shots 20/14 lb")
+        self.assertTrue(items)
+        self.assertEqual(items[0]["sex_variant"], "male_female")
+
+    def test_compare_to_is_extracted(self) -> None:
+        row = {
+            "wod_date": "2026-04-01",
+            "resolved_url": "https://example.com",
+            "page_type": "unknown",
+            "raw_text": "Workout of the Day\n5 rounds for time of:\n10 burpees\nCompare to 2025-04-01",
+        }
+        payload = parse_one(row)
+        self.assertIn("Compare to", payload["compare_to_text"] or "")
+
+    def test_promo_page_does_not_generate_fake_movements(self) -> None:
+        row = {
+            "wod_date": "2026-03-11",
+            "resolved_url": "https://example.com",
+            "page_type": "unknown",
+            "raw_text": "Learn the Movement\nWatch the Replay\nRead More",
+        }
+        payload = parse_one(row)
+        entities = json.loads(payload["movement_list_json"])
+        movement_entities = [e for e in entities if e.get("kind") == "movement"]
+        self.assertEqual(payload["record_status"], "editorial_ignored")
+        self.assertEqual(len(movement_entities), 0)
+
+    def test_inferred_rx_fallback_applied_only_when_source_absent(self) -> None:
+        items = extract_ordered_movements("Box jump")
+        self.assertTrue(items[0]["rx_standard_applied"])
+        self.assertIn("inferred_male", items[0])
+
+    def test_explicit_source_overrides_inferred_defaults(self) -> None:
+        items = extract_ordered_movements("Box jump 24 in")
+        self.assertFalse(items[0]["rx_standard_applied"])
+        self.assertEqual(items[0]["distance_unit"], "in")
 
 
 if __name__ == "__main__":

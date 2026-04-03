@@ -5,38 +5,58 @@ import json
 import re
 
 from .db import get_conn
+from .movement_taxonomy import movement_index
 
 MOVEMENT_ALIASES = {
-    "pull-up": ("pull-up", "pull up", "pullups", "pullups"),
-    "push-up": ("push-up", "push up", "pushups", "pushups"),
-    "air squat": ("air squat", "air squats"),
-    "double-under": ("double-under", "double under", "double unders"),
-    "knees-to-elbows": ("knees-to-elbows", "knees to elbows", "knees-to-elbow"),
-    "clean-and-jerk": ("clean and jerk", "clean-and-jerk"),
+    "pull_up": ("pull-up", "pull up", "pullups", "pullups"),
+    "push_up": ("push-up", "push up", "pushups", "pushups"),
+    "air_squat": ("air squat", "air squats"),
+    "double_under": ("double-under", "double under", "double unders"),
+    "knees_to_elbows": ("knees-to-elbows", "knees to elbows", "knees-to-elbow"),
+    "clean_and_jerk": ("clean and jerk", "clean-and-jerk"),
     "snatch": ("snatch",),
     "thruster": ("thruster", "thrusters"),
     "deadlift": ("deadlift", "deadlifts"),
     "row": ("row", "rowing"),
     "run": ("run", "running"),
     "burpee": ("burpee", "burpees"),
-    "box jump": ("box jump", "box jumps"),
-    "wall-ball shot": ("wall ball", "wall-ball", "wall ball shot", "wall-ball shot"),
-    "toes-to-bar": ("toes-to-bar", "toes to bar"),
-    "muscle-up": ("muscle-up", "muscle up", "muscleups"),
-    "sit-up": ("sit-up", "sit up", "situps"),
-    "handstand push-up": ("handstand push-up", "handstand push-ups", "handstand push up", "handstand push ups", "hspu"),
-    "walking lunge": ("walking lunge", "walking lunges"),
-    "lunge": ("lunge", "lunges"),
-    "power clean": ("power clean", "power cleans"),
-    "power snatch": ("power snatch", "power snatches"),
-    "overhead squat": ("overhead squat", "overhead squats"),
-    "front squat": ("front squat", "front squats"),
-    "back squat": ("back squat", "back squats"),
-    "sumo deadlift high pull": ("sumo deadlift high pull", "sdlhp"),
+    "box_jump": ("box jump", "box jumps"),
+    "box_jump_over": ("box jump over", "box jump-over", "box jump-overs"),
+    "wall_ball": ("wall ball", "wall-ball", "wall ball shot", "wall-ball shot"),
+    "toes_to_bar": ("toes-to-bar", "toes to bar"),
+    "muscle_up": ("muscle-up", "muscle up", "muscleups"),
+    "sit_up": ("sit-up", "sit up", "situps"),
+    "handstand_push_up": ("handstand push-up", "handstand push-ups", "handstand push up", "handstand push ups", "hspu"),
+    "walking_lunge": ("walking lunge", "walking lunges"),
+    "power_clean": ("power clean", "power cleans"),
+    "power_snatch": ("power snatch", "power snatches"),
+    "hang_power_snatch": ("hang power snatch", "hang power snatches"),
+    "overhead_squat": ("overhead squat", "overhead squats"),
+    "front_squat": ("front squat", "front squats"),
+    "back_squat": ("back squat", "back squats"),
+    "sumo_deadlift_high_pull": ("sumo deadlift high pull", "sdlhp"),
     "clean": ("clean", "cleans"),
-    "jerk": ("jerk", "jerks"),
+    "push_press": ("push press", "push presses"),
+    "push_jerk": ("push jerk", "push jerks"),
+    "split_jerk": ("split jerk", "split jerks"),
     "squat": ("squat", "squats"),
 }
+
+RX_FALLBACK_RULES = {
+    "wall_ball": {
+        "female": {"load_value_si": 6.35, "load_unit_si": "kg", "distance_value_si": 2.74, "distance_unit_si": "m"},
+        "male": {"load_value_si": 9.07, "load_unit_si": "kg", "distance_value_si": 3.05, "distance_unit_si": "m"},
+    },
+    "box_jump": {
+        "female": {"distance_value_si": 0.51, "distance_unit_si": "m"},
+        "male": {"distance_value_si": 0.61, "distance_unit_si": "m"},
+    },
+    "box_jump_over": {
+        "female": {"distance_value_si": 0.51, "distance_unit_si": "m"},
+        "male": {"distance_value_si": 0.61, "distance_unit_si": "m"},
+    },
+}
+SEX_VARIANT_PATTERN = re.compile(r"(?P<male>\d+(?:\.\d+)?)[/](?P<female>\d+(?:\.\d+)?)\s*(?P<unit>lb|lbs|kg|kgs|in|inch|ft)", re.IGNORECASE)
 
 FORMAT_PATTERNS = {
     "amrap": re.compile(r"\bamrap\b", re.IGNORECASE),
@@ -143,9 +163,103 @@ def detect_movements(text: str) -> list[dict]:
                 if movement_norm in seen:
                     break
                 seen.add(movement_norm)
-                found.append({"movement_raw": alias, "movement_norm": movement_norm})
+                meta = movement_index().get(movement_norm, {})
+                found.append(
+                    {
+                        "movement_raw": alias,
+                        "movement_norm": movement_norm,
+                        "movement_id": movement_norm,
+                        "movement_name": meta.get("name", movement_norm.replace("_", " ").title()),
+                        "family": meta.get("family"),
+                        "patterns": meta.get("patterns", []),
+                        "implement": meta.get("implement"),
+                        "skill_level": meta.get("skill_level"),
+                    }
+                )
                 break
     return found
+
+
+def _nearest_reps_before_alias(line: str, alias: str) -> int | None:
+    idx = line.lower().find(alias.lower())
+    if idx < 0:
+        return None
+    prefix = line[:idx]
+    nums = re.findall(r"\b(\d{1,3})\b", prefix)
+    return int(nums[-1]) if nums else None
+
+
+def infer_rx_fallback(item: dict) -> dict:
+    item = dict(item)
+    if item.get("load_value") is not None or item.get("distance_value") is not None:
+        item["rx_standard_applied"] = False
+        return item
+
+    rule = RX_FALLBACK_RULES.get(item.get("movement_id"))
+    if not rule:
+        item["rx_standard_applied"] = False
+        return item
+
+    item["rx_standard_applied"] = True
+    item["inferred_standard_source"] = "crossfit_default_2026"
+    for sex, payload in rule.items():
+        item[f"inferred_{sex}"] = payload
+    return item
+
+
+def extract_ordered_movements(text: str) -> list[dict]:
+    items: list[dict] = []
+    order_index = 1
+    for line in [ln.strip() for ln in text.splitlines() if ln.strip()]:
+        if COMMENT_BLOCK_RE.search(line):
+            continue
+        line_measurements = extract_measurements(line)
+        load_entry = next((m for m in line_measurements if m.get("kind") == "load"), None)
+        distance_entry = next((m for m in line_measurements if m.get("kind") == "distance"), None)
+        calorie_match = re.search(r"\b(\d+)\s*cals?\b", line, re.IGNORECASE)
+        duration_match = re.search(r"\b(\d+)\s*(?:seconds?|secs?|minutes?|mins?)\b", line, re.IGNORECASE)
+        sex_variant = "neutral"
+        sex_matches = SEX_VARIANT_PATTERN.findall(line)
+        if sex_matches:
+            sex_variant = "male_female"
+
+        for movement in detect_movements(line):
+            reps_value = _nearest_reps_before_alias(line, movement.get("movement_raw", "") or "")
+            entry = {
+                "kind": "movement",
+                "order_index": order_index,
+                "movement_id": movement.get("movement_id"),
+                "movement_name": movement.get("movement_name"),
+                "family": movement.get("family"),
+                "patterns": movement.get("patterns", []),
+                "implement": movement.get("implement"),
+                "skill_level": movement.get("skill_level"),
+                "movement_raw": movement.get("movement_raw"),
+                "movement_norm": movement.get("movement_norm"),
+                "reps": reps_value,
+                "calories": int(calorie_match.group(1)) if calorie_match else None,
+                "duration_seconds": None,
+                "distance_value": distance_entry.get("value_source") if distance_entry else None,
+                "distance_unit": distance_entry.get("unit_source") if distance_entry else None,
+                "distance_value_si": distance_entry.get("value_si") if distance_entry else None,
+                "distance_unit_si": distance_entry.get("unit_si") if distance_entry else None,
+                "load_value": load_entry.get("value_source") if load_entry else None,
+                "load_unit": load_entry.get("unit_source") if load_entry else None,
+                "load_value_si": load_entry.get("value_si") if load_entry else None,
+                "load_unit_si": load_entry.get("unit_si") if load_entry else None,
+                "sex_variant": sex_variant,
+                "notes": line,
+            }
+            if duration_match:
+                val = int(duration_match.group(1))
+                if "min" in duration_match.group(0).lower():
+                    entry["duration_seconds"] = val * 60
+                else:
+                    entry["duration_seconds"] = val
+            entry = infer_rx_fallback(entry)
+            items.append(entry)
+            order_index += 1
+    return items
 
 
 def extract_title(text: str) -> str | None:
@@ -169,6 +283,24 @@ def extract_compare_to(text: str) -> str | None:
         if "compare to" in line.lower():
             return line.strip()
     return None
+
+
+def extract_time_cap_minutes(text: str) -> float | None:
+    match = re.search(r"\btime\s*cap\s*(?:of|:)??\s*(\d+(?:\.\d+)?)\s*(min|minutes?)\b", text, re.IGNORECASE)
+    if not match:
+        return None
+    return float(match.group(1))
+
+
+def extract_score_hints(text: str) -> str | None:
+    hints = []
+    for line in text.splitlines():
+        low = line.lower()
+        if "post" in low and "time" in low:
+            hints.append(line.strip())
+        if "score" in low and ("round" in low or "reps" in low or "time" in low):
+            hints.append(line.strip())
+    return " | ".join(dict.fromkeys(hints)) if hints else None
 
 
 def detect_workout_format(text: str) -> str | None:
@@ -447,6 +579,7 @@ def parse_one(row) -> dict:
             record_status = "needs_review"
 
     movements = detect_movements(parse_text)
+    ordered_movements = extract_ordered_movements(parse_text)
     measurements = extract_measurements(parse_text)
     workout_format = detect_workout_format(parse_text)
     rpe_source = extract_rpe_source(parse_text)
@@ -469,6 +602,8 @@ def parse_one(row) -> dict:
         tags.append("editorial_only")
     if movements:
         tags.append("has_movements")
+    if ordered_movements:
+        tags.append("has_ordered_movements")
     if measurements:
         tags.append("has_measurements")
     if workout_format:
@@ -491,11 +626,11 @@ def parse_one(row) -> dict:
         "title": extract_title(raw_text),
         "wod_text": wod_text,
         "notes_text": extract_notes(parse_text),
-        "score_text": None,
         "compare_to_text": extract_compare_to(parse_text),
+        "score_text": extract_score_hints(parse_text),
         "rpe_source": rpe_source,
         "workout_format": workout_format,
-        "movement_list_json": json.dumps(movements + measurements, ensure_ascii=False),
+        "movement_list_json": json.dumps(ordered_movements + measurements, ensure_ascii=False),
         "tags_json": json.dumps(tags, ensure_ascii=False),
     }
 
