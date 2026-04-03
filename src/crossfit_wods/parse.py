@@ -17,6 +17,11 @@ FORMAT_PATTERNS = {
     "emom": re.compile(r"\bemom\b", re.IGNORECASE),
     "tabata": re.compile(r"\btabata\b", re.IGNORECASE),
 }
+STRENGTH_LIFT_RE = re.compile(
+    r"\b(?:back\s+squat|squat|deadlift|bench(?:-press|\s+press)?|press|clean|jerk|snatch)\b",
+    re.IGNORECASE,
+)
+STRENGTH_KEYWORD_RE = re.compile(r"\b(?:find\s+your\s+best|best\s+\w+|1\s*rep|3\s*reps|5\s*reps|5\s*,\s*3\s*,\s*(?:and\s*)?1\s*reps)\b", re.IGNORECASE)
 
 RPE_PATTERN = re.compile(r"\brpe\s*[:\-]?\s*(\d{1,2}(?:\.\d)?)", re.IGNORECASE)
 LOAD_PATTERN = re.compile(r"\b(?P<value>\d+(?:\.\d+)?)\s?(?P<unit>kg|kgs|lb|lbs|pood|poods)\b", re.IGNORECASE)
@@ -26,6 +31,12 @@ DISTANCE_PATTERN = re.compile(
 )
 WOD_STRUCTURE_RE = re.compile(r"(^|\s)(\d+(?:\s*[-x]\s*\d+)+|\d+\s*rounds?)", re.IGNORECASE)
 STOP_BLOCK_MARKERS = ("related", "comments", "share", "podcast", "newsletter", "watch")
+EDITORIAL_LINE_MARKERS = ("resource", "resources", "read", "article", "link")
+
+
+def is_strength_line(text: str) -> bool:
+    line = text.lower()
+    return bool(STRENGTH_LIFT_RE.search(line) and STRENGTH_KEYWORD_RE.search(line))
 
 
 def detect_movements(text: str) -> list[dict]:
@@ -54,6 +65,8 @@ def extract_notes(text: str) -> str | None:
 
 
 def detect_workout_format(text: str) -> str | None:
+    if is_strength_line(text) or (STRENGTH_LIFT_RE.search(text) and "find your best" in text.lower()):
+        return "strength"
     for name, pattern in FORMAT_PATTERNS.items():
         if pattern.search(text):
             return name
@@ -108,17 +121,30 @@ def extract_wod_block(raw_text: str) -> tuple[str | None, bool]:
                 break
 
     if start_idx is None:
+        for idx, line in enumerate(lines):
+            if is_strength_line(line):
+                start_idx = idx
+                break
+
+    if start_idx is None:
         return None, True
 
     block: list[str] = []
+    has_strength_prescription = False
     for line in lines[start_idx:start_idx + 25]:
         line_low = line.lower()
         if any(marker in line_low for marker in STOP_BLOCK_MARKERS) and len(block) >= 2:
             break
+        if (
+            has_strength_prescription
+            and ("http://" in line_low or "https://" in line_low or "www." in line_low or any(marker in line_low for marker in EDITORIAL_LINE_MARKERS))
+        ):
+            break
         block.append(line)
+        has_strength_prescription = has_strength_prescription or is_strength_line(line)
 
     wod_block = "\n".join(block).strip()
-    has_measure_or_movement = bool(extract_measurements(wod_block) or detect_movements(wod_block))
+    has_measure_or_movement = bool(extract_measurements(wod_block) or detect_movements(wod_block) or is_strength_line(wod_block))
     is_ambiguous = len(block) < 2 or not has_measure_or_movement
     if not wod_block:
         return None, True

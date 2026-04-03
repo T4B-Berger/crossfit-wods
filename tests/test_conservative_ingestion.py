@@ -39,6 +39,31 @@ class ConservativeIngestionTests(unittest.TestCase):
         text = soup.get_text("\n", strip=True)
         self.assertEqual(classify_page(soup, text), "wod")
 
+    def test_classify_page_detects_old_school_strength_wod(self) -> None:
+        html = """
+        <html><body><article>
+        <p>Find your best back squat at 5,3, and 1 reps</p>
+        <p>Find your best deadlift at 5,3, and 1 reps</p>
+        <p>Find your best bench-press at 5,3, and 1 reps</p>
+        <p>Read the article for historical context and links.</p>
+        </article></body></html>
+        """
+        soup = BeautifulSoup(html, "lxml")
+        text = soup.get_text("\n", strip=True)
+        self.assertEqual(classify_page(soup, text), "wod")
+
+    def test_classify_page_keeps_editorial_article_conservative(self) -> None:
+        html = """
+        <html><body><article>
+        <p>This article discusses how to find your best habits as a coach.</p>
+        <p>It includes a 5,3,1 writing framework and opinion on nutrition.</p>
+        <p>Podcast and article links are provided for additional reading.</p>
+        </article></body></html>
+        """
+        soup = BeautifulSoup(html, "lxml")
+        text = soup.get_text("\n", strip=True)
+        self.assertEqual(classify_page(soup, text), "editorial_only")
+
     def test_extract_wod_block_ambiguous_without_measure_or_movement(self) -> None:
         block, ambiguous = extract_wod_block("Warm-up\nFor Time\nGo hard")
         self.assertIsNotNone(block)
@@ -61,6 +86,25 @@ class ConservativeIngestionTests(unittest.TestCase):
         self.assertEqual(payload["record_status"], "needs_review")
         tags = json.loads(payload["tags_json"])
         self.assertIn("needs_review", tags)
+
+    def test_parse_one_strength_block_stops_before_editorial_resource(self) -> None:
+        row = {
+            "wod_date": "2001-02-16",
+            "resolved_url": "https://www.crossfit.com/workout/2001/02/16",
+            "page_type": "wod",
+            "raw_text": (
+                "Find your best back squat at 5,3, and 1 reps\n"
+                "Find your best deadlift at 5,3, and 1 reps\n"
+                "Find your best bench-press at 5,3, and 1 reps\n"
+                "Read this article for context\n"
+                "https://example.com/resource"
+            ),
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "valid_wod")
+        self.assertEqual(payload["workout_format"], "strength")
+        self.assertIn("bench-press", payload["wod_text"] or "")
+        self.assertNotIn("https://", payload["wod_text"] or "")
 
 
 if __name__ == "__main__":
