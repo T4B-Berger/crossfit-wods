@@ -37,3 +37,9 @@ streamlit run app/Home.py
 - Le parseur est volontairement conservateur.
 - Les unités impériales sont conservées, avec conversion SI en parallèle.
 - Les filières énergétiques sont stockées en terminologie française.
+
+## Évolutions récentes du parsing WOD
+- Détection renforcée des WODs de **force historiques** (ex: formulations `find your best`, schéma `5,3,1 reps`, mouvements type back squat / deadlift / bench press).
+- Meilleure extraction des blocs force: arrêt avant les sections éditoriales/ressources (articles, liens, etc.) afin de conserver uniquement la prescription d'entraînement.
+- Prise en charge des WODs **monostructuraux simples** (ex: `4 rounds, each for time of: 800-meter run`) avec extraction conservatrice du mouvement et des mesures.
+- Règle de validation conservatrice: pour classer un WOD, le système recherche une structure d'entraînement + au moins un mouvement + au moins une quantité mesurable (reps, distance ou temps).
