@@ -340,25 +340,71 @@ def classify_record(page_type: str, raw_text: str | None) -> tuple[str, int, int
     return "needs_review", 0, 0, 0, raw_text
 
 
+def finalize_record_status(
+    *,
+    page_type: str,
+    parse_text: str,
+    workout_format: str | None,
+    movements: list[dict],
+    measurements: list[dict],
+    block_score: int | None,
+) -> tuple[str, int, int, int]:
+    low = parse_text.lower()
+    has_movement = bool(movements)
+    has_measurement = bool(measurements)
+    has_structure = bool(STRUCTURE_RE.search(parse_text) or WOD_STRUCTURE_RE.search(parse_text) or is_strength_line(parse_text) or STRENGTH_SCHEME_RE.search(parse_text))
+    score_ok = (block_score or -999) >= 6
+
+    is_rest = workout_format == "rest_day" or ("rest day" in low and not has_measurement and not has_movement)
+    if is_rest:
+        return "valid_rest_day", 1, 0, 0
+
+    strong_format = workout_format in {"for_time", "amrap", "tabata", "emom", "strength", "strength_skill", "mixed"}
+    strong_wod = strong_format and has_structure and has_movement and has_measurement and score_ok
+    if strong_wod:
+        return "valid_wod", 0, 0, 0
+
+    if page_type == "editorial_only" and not strong_wod:
+        return "editorial_ignored", 0, 0, 1
+
+    if page_type == "rest_day":
+        return "valid_rest_day", 1, 0, 0
+
+    return "needs_review", 0, 0, 0
+
+
 def parse_one(row) -> dict:
     raw_text = row["raw_text"] or ""
-    record_status, is_rest_day, is_missing, is_editorial_only, wod_text = classify_record(row["page_type"], raw_text)
+    initial_status, _, is_missing, _, wod_text = classify_record(row["page_type"], raw_text)
+    record_status = initial_status
+    is_rest_day = 0
+    is_editorial_only = 0
 
     parse_text = raw_text
     block_score = None
     block_reasons: list[str] = []
-    if row["page_type"] == "wod":
+    if row["page_type"] != "not_found":
         wod_block, ambiguous_wod, block_score, block_reasons = select_main_wod_block(raw_text)
         if wod_block:
             wod_text = wod_block
             parse_text = wod_block
-        if ambiguous_wod:
+        if ambiguous_wod and record_status == "valid_wod":
             record_status = "needs_review"
 
     movements = detect_movements(parse_text)
     measurements = extract_measurements(parse_text)
     workout_format = detect_workout_format(parse_text)
     rpe_source = extract_rpe_source(parse_text)
+
+    if row["page_type"] != "not_found":
+        record_status, is_rest_day, _, is_editorial_only = finalize_record_status(
+            page_type=row["page_type"],
+            parse_text=parse_text,
+            workout_format=workout_format,
+            movements=movements,
+            measurements=measurements,
+            block_score=block_score,
+        )
 
     tags = []
     if is_rest_day:

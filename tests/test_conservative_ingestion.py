@@ -352,6 +352,59 @@ class ConservativeIngestionTests(unittest.TestCase):
         payload = parse_one(row)
         self.assertEqual(payload["record_status"], "needs_review")
 
+    def test_parse_one_promotes_unknown_for_time_to_valid_wod(self) -> None:
+        row = {
+            "wod_date": "2026-04-03",
+            "resolved_url": "https://www.crossfit.com/workout/2026/04/03",
+            "page_type": "unknown",
+            "raw_text": (
+                "Workout of the Day\n"
+                "8 rounds for time of:\n"
+                "5 hang power cleans (135 lb)\n"
+                "7 box jumps\n"
+                "Compare to 2025-04-03"
+            ),
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "valid_wod")
+        self.assertEqual(payload["workout_format"], "for_time")
+
+    def test_parse_one_promotes_unknown_rest_day_to_valid_rest_day(self) -> None:
+        row = {
+            "wod_date": "2026-04-02",
+            "resolved_url": "https://www.crossfit.com/workout/2026/04/02",
+            "page_type": "unknown",
+            "raw_text": "Workout of the Day\nRest Day",
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "valid_rest_day")
+        self.assertEqual(payload["is_rest_day"], 1)
+
+    def test_parse_one_teaser_only_stays_needs_review(self) -> None:
+        row = {
+            "wod_date": "2026-03-09",
+            "resolved_url": "https://www.crossfit.com/workout/2026/03/09",
+            "page_type": "unknown",
+            "raw_text": "Today, we have a fun challenge for all levels.",
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "needs_review")
+
+    def test_parse_one_promotes_unknown_strength_skill_to_valid_wod(self) -> None:
+        row = {
+            "wod_date": "2026-03-25",
+            "resolved_url": "https://www.crossfit.com/workout/2026/03/25",
+            "page_type": "unknown",
+            "raw_text": (
+                "Workout of the Day\n"
+                "Build to a heavy snatch\n"
+                "5-5-5-5-5 overhead squat (95 lb)"
+            ),
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "valid_wod")
+        self.assertEqual(payload["workout_format"], "strength_skill")
+
 
 if __name__ == "__main__":
     unittest.main()
