@@ -30,7 +30,27 @@ def build_quality_metrics(wods: pd.DataFrame, pages: pd.DataFrame, movements: pd
         metrics["coverage_start"] = None
         metrics["coverage_end"] = None
 
-    return pd.DataFrame([{"metric": key, "value": value} for key, value in metrics.items()])
+    def _value_type(value: object) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "bool"
+        if isinstance(value, int):
+            return "int"
+        if isinstance(value, float):
+            return "float"
+        return "str"
+
+    rows = []
+    for key, value in metrics.items():
+        rows.append(
+            {
+                "metric": key,
+                "value": None if value is None else str(value),
+                "value_type": _value_type(value),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def main() -> None:
