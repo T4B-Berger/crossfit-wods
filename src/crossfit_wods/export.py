@@ -20,11 +20,15 @@ def main() -> None:
     with get_conn(args.db_path) as conn:
         wods = pd.read_sql_query("SELECT * FROM daily_wods ORDER BY wod_date", conn)
         pages = pd.read_sql_query("SELECT * FROM daily_pages ORDER BY wod_date", conn)
+        movements = pd.read_sql_query("SELECT * FROM movements ORDER BY wod_date, id", conn)
 
     wods.to_csv(out_dir / "crossfit_wods.csv", index=False)
     pages.to_csv(out_dir / "daily_pages.csv", index=False)
+    movements.to_csv(out_dir / "movements.csv", index=False)
+
     wods.to_parquet(out_dir / "crossfit_wods.parquet", index=False)
     pages.to_parquet(out_dir / "daily_pages.parquet", index=False)
+    movements.to_parquet(out_dir / "movements.parquet", index=False)
     print(f"exported to {out_dir}")
 
 
