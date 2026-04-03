@@ -29,6 +29,7 @@ MOVEMENT_ALIASES = {
     "handstand_push_up": ("handstand push-up", "handstand push-ups", "handstand push up", "handstand push ups", "hspu"),
     "walking_lunge": ("walking lunge", "walking lunges"),
     "power_clean": ("power clean", "power cleans"),
+    "hang_power_clean": ("hang power clean", "hang power cleans"),
     "power_snatch": ("power snatch", "power snatches"),
     "hang_power_snatch": ("hang power snatch", "hang power snatches"),
     "overhead_squat": ("overhead squat", "overhead squats"),
@@ -57,6 +58,8 @@ RX_FALLBACK_RULES = {
     },
 }
 SEX_VARIANT_PATTERN = re.compile(r"(?P<male>\d+(?:\.\d+)?)[/](?P<female>\d+(?:\.\d+)?)\s*(?P<unit>lb|lbs|kg|kgs|in|inch|ft)", re.IGNORECASE)
+ROUND_PATTERN = re.compile(r"\b(?P<rounds>\d+)\s*rounds?\b", re.IGNORECASE)
+EVERY_MIN_PATTERN = re.compile(r"every\s+(?P<minutes>\d+(?:\.\d+)?)\s+minutes?\s+for\s+(?P<sets>\d+)\s+sets?", re.IGNORECASE)
 
 FORMAT_PATTERNS = {
     "amrap": re.compile(r"\bamrap\b", re.IGNORECASE),
@@ -189,6 +192,51 @@ def _nearest_reps_before_alias(line: str, alias: str) -> int | None:
     return int(nums[-1]) if nums else None
 
 
+def parse_structure_metadata(text: str) -> dict:
+    metadata = {
+        "rounds": None,
+        "sets": None,
+        "interval_minutes": None,
+        "time_cap_minutes": extract_time_cap_minutes(text),
+    }
+    rounds_match = ROUND_PATTERN.search(text)
+    if rounds_match:
+        metadata["rounds"] = int(rounds_match.group("rounds"))
+    every_match = EVERY_MIN_PATTERN.search(text)
+    if every_match:
+        metadata["interval_minutes"] = float(every_match.group("minutes"))
+        metadata["sets"] = int(every_match.group("sets"))
+    return metadata
+
+
+def _match_movements_with_spans(segment: str) -> list[dict]:
+    candidates: list[dict] = []
+    for movement_id, aliases in MOVEMENT_ALIASES.items():
+        for alias in aliases:
+            for match in re.finditer(rf"\b{re.escape(alias)}\b", segment, re.IGNORECASE):
+                candidates.append(
+                    {
+                        "movement_id": movement_id,
+                        "alias": alias,
+                        "start": match.start(),
+                        "end": match.end(),
+                        "length": len(alias),
+                    }
+                )
+
+    # Specificity rule: longer phrase wins; overlapping generic matches are dropped.
+    candidates.sort(key=lambda c: (c["length"], -(c["end"] - c["start"])), reverse=True)
+    selected: list[dict] = []
+    for candidate in candidates:
+        overlaps = any(not (candidate["end"] <= s["start"] or candidate["start"] >= s["end"]) for s in selected)
+        if overlaps:
+            continue
+        selected.append(candidate)
+
+    selected.sort(key=lambda c: c["start"])
+    return selected
+
+
 def infer_rx_fallback(item: dict) -> dict:
     item = dict(item)
     if item.get("load_value") is not None or item.get("distance_value") is not None:
@@ -210,8 +258,11 @@ def infer_rx_fallback(item: dict) -> dict:
 def extract_ordered_movements(text: str) -> list[dict]:
     items: list[dict] = []
     order_index = 1
+    structure = parse_structure_metadata(text)
     for line in [ln.strip() for ln in text.splitlines() if ln.strip()]:
         if COMMENT_BLOCK_RE.search(line):
+            continue
+        if line.lower() in {"workout of the day", "rest day"}:
             continue
         line_measurements = extract_measurements(line)
         load_entry = next((m for m in line_measurements if m.get("kind") == "load"), None)
@@ -223,11 +274,26 @@ def extract_ordered_movements(text: str) -> list[dict]:
         if sex_matches:
             sex_variant = "male_female"
 
-        for movement in detect_movements(line):
-            reps_value = _nearest_reps_before_alias(line, movement.get("movement_raw", "") or "")
-            entry = {
-                "kind": "movement",
-                "order_index": order_index,
+        segments = [s.strip() for s in re.split(r",|\band\b|/", line) if s.strip()]
+        for segment in segments:
+            matches = _match_movements_with_spans(segment)
+            for matched in matches:
+                movement = next((m for m in detect_movements(matched["alias"]) if m.get("movement_id") == matched["movement_id"]), None)
+                if not movement:
+                    movement = {
+                        "movement_id": matched["movement_id"],
+                        "movement_name": movement_index().get(matched["movement_id"], {}).get("name", matched["movement_id"]),
+                        "family": movement_index().get(matched["movement_id"], {}).get("family"),
+                        "patterns": movement_index().get(matched["movement_id"], {}).get("patterns", []),
+                        "implement": movement_index().get(matched["movement_id"], {}).get("implement"),
+                        "skill_level": movement_index().get(matched["movement_id"], {}).get("skill_level"),
+                        "movement_raw": matched["alias"],
+                        "movement_norm": matched["movement_id"],
+                    }
+                reps_value = _nearest_reps_before_alias(segment, matched["alias"])
+                entry = {
+                    "kind": "movement",
+                    "order_index": order_index,
                 "movement_id": movement.get("movement_id"),
                 "movement_name": movement.get("movement_name"),
                 "family": movement.get("family"),
@@ -248,17 +314,20 @@ def extract_ordered_movements(text: str) -> list[dict]:
                 "load_value_si": load_entry.get("value_si") if load_entry else None,
                 "load_unit_si": load_entry.get("unit_si") if load_entry else None,
                 "sex_variant": sex_variant,
-                "notes": line,
-            }
-            if duration_match:
-                val = int(duration_match.group(1))
-                if "min" in duration_match.group(0).lower():
-                    entry["duration_seconds"] = val * 60
-                else:
-                    entry["duration_seconds"] = val
-            entry = infer_rx_fallback(entry)
-            items.append(entry)
-            order_index += 1
+                    "notes": segment,
+                    "rounds": structure.get("rounds"),
+                    "sets": structure.get("sets"),
+                    "interval_minutes": structure.get("interval_minutes"),
+                }
+                if duration_match:
+                    val = int(duration_match.group(1))
+                    if "min" in duration_match.group(0).lower():
+                        entry["duration_seconds"] = val * 60
+                    else:
+                        entry["duration_seconds"] = val
+                entry = infer_rx_fallback(entry)
+                items.append(entry)
+                order_index += 1
     return items
 
 
@@ -594,6 +663,9 @@ def parse_one(row) -> dict:
             block_score=block_score,
             richer_wod_exists=richer_wod_exists,
         )
+
+    if record_status == "valid_rest_day":
+        ordered_movements = []
 
     tags = []
     if is_rest_day:

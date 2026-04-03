@@ -441,6 +441,9 @@ class ConservativeIngestionTests(unittest.TestCase):
         }
         payload = parse_one(row)
         self.assertEqual(payload["record_status"], "valid_rest_day")
+        entities = json.loads(payload["movement_list_json"])
+        movement_entities = [e for e in entities if e.get("kind") == "movement"]
+        self.assertEqual(movement_entities, [])
 
     def test_parse_one_for_time_metcon_still_valid_wod(self) -> None:
         row = {
@@ -492,10 +495,26 @@ class ConservativeIngestionTests(unittest.TestCase):
         self.assertEqual(ids[:2], ["thruster", "run"])
         self.assertEqual(items[0]["reps"], 10)
 
+    def test_compact_rounds_structure_two_movements_only(self) -> None:
+        items = extract_ordered_movements("8 rounds for time of: 5 box jump-overs, 5 hang power cleans")
+        ids = [item["movement_id"] for item in items]
+        self.assertEqual(ids, ["box_jump_over", "hang_power_clean"])
+        self.assertEqual(items[0]["rounds"], 8)
+        self.assertEqual(len(items), 2)
+
     def test_extract_ordered_movements_strength_skill_sequence(self) -> None:
         items = extract_ordered_movements("Every 5 minutes for 7 sets:\n3 push presses\n2 push jerks\n1 split jerk")
         ids = [item["movement_id"] for item in items]
         self.assertEqual(ids, ["push_press", "push_jerk", "split_jerk"])
+
+    def test_specificity_beats_generic_clean_and_box(self) -> None:
+        items = extract_ordered_movements("5 box jump-overs and 5 hang power cleans")
+        ids = [item["movement_id"] for item in items]
+        self.assertIn("box_jump_over", ids)
+        self.assertIn("hang_power_clean", ids)
+        self.assertNotIn("box_jump", ids)
+        self.assertNotIn("clean", ids)
+        self.assertNotIn("power_clean", ids)
 
     def test_detect_workout_format_emom_amrap_tabata(self) -> None:
         self.assertEqual(detect_workout_format("EMOM 20: 5 burpees"), "emom")

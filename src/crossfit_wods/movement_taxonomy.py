@@ -42,6 +42,7 @@ MOVEMENT_TAXONOMY = {
         {"id": "split_jerk", "name": "Split Jerk", "family": "weightlifting", "patterns": ["push", "full_body"], "implement": "barbell", "skill_level": "advanced"},
         {"id": "clean", "name": "Clean", "family": "weightlifting", "patterns": ["hinge", "pull", "full_body"], "implement": "barbell", "skill_level": "advanced"},
         {"id": "power_clean", "name": "Power Clean", "family": "weightlifting", "patterns": ["hinge", "pull", "full_body"], "implement": "barbell", "skill_level": "intermediate"},
+        {"id": "hang_power_clean", "name": "Hang Power Clean", "family": "weightlifting", "patterns": ["hinge", "pull", "full_body"], "implement": "barbell", "skill_level": "intermediate"},
         {"id": "snatch", "name": "Snatch", "family": "weightlifting", "patterns": ["hinge", "pull", "full_body"], "implement": "barbell", "skill_level": "advanced"},
         {"id": "power_snatch", "name": "Power Snatch", "family": "weightlifting", "patterns": ["hinge", "pull", "full_body"], "implement": "barbell", "skill_level": "advanced"},
         {"id": "hang_power_snatch", "name": "Hang Power Snatch", "family": "weightlifting", "patterns": ["hinge", "pull", "full_body"], "implement": "barbell", "skill_level": "advanced"},
