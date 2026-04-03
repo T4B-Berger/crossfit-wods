@@ -6,7 +6,12 @@ import unittest
 from bs4 import BeautifulSoup
 
 from crossfit_wods.parse import extract_wod_block, parse_one
-from crossfit_wods.scraper import classify_page, extract_main_text_from_html, explain_main_text_choice
+from crossfit_wods.scraper import (
+    classify_page,
+    extract_main_text_from_html,
+    explain_main_text_choice,
+    is_comment_like_text,
+)
 
 
 class ConservativeIngestionTests(unittest.TestCase):
@@ -187,6 +192,39 @@ class ConservativeIngestionTests(unittest.TestCase):
         self.assertIn("selector", info)
         self.assertIn("rationale", info)
         self.assertIsNotNone(info["container"])
+
+    def test_extract_main_text_prefers_structured_json_article_body(self) -> None:
+        html = """
+        <html><body>
+          <script type="application/ld+json">
+            {
+              "@type": "Article",
+              "articleBody": "Workout of the Day\\n5 rounds for time of:\\nRun 400 m"
+            }
+          </script>
+          <main><p>Reply</p><p>Modified tabata from 2026/03/30</p></main>
+        </body></html>
+        """
+        text = extract_main_text_from_html(html)
+        self.assertIn("5 rounds for time", text)
+        self.assertNotIn("Modified tabata", text)
+
+    def test_extract_main_text_supports_next_data_payload(self) -> None:
+        html = """
+        <html><body>
+          <script id="__NEXT_DATA__" type="application/json">
+            {"props": {"pageProps": {"post": {"content": "Workout of the Day\\n8' AMRAP\\n8 burpees"}}}}
+          </script>
+          <section id="comments"><p>Reply</p></section>
+        </body></html>
+        """
+        info = explain_main_text_choice(html)
+        self.assertEqual(info["source_type"], "structured_json")
+        self.assertIn("AMRAP", info["preview"])
+
+    def test_comment_like_text_detection(self) -> None:
+        self.assertTrue(is_comment_like_text("Didn't have a rope climb, so I modified the program. Reply"))
+        self.assertFalse(is_comment_like_text("Workout of the Day\n8 rounds for time of:\n5 pull-ups\n10 push-ups"))
 
 
 if __name__ == "__main__":

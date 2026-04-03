@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -51,6 +52,14 @@ LIKELY_CONTAINER_SELECTORS = (
 CONTAINER_KEYWORDS = ("workout", "post", "entry", "content", "wod")
 STRONG_WOD_TEXT_MARKERS = ("for time", "amrap", "tabata", "emom", "rounds for time", "21-15-9")
 NEGATIVE_TEXT_MARKERS = ("reply", "comments", "previous post", "next post", "share", "follow us")
+COMMENT_LIKE_MARKERS = (
+    "reply", "leave a comment", "yesterday i did", "i modified", "modified ", "didn't have", "didnt have",
+    "scaled", "rx+", "my score", "as prescribed", "find a gym", "subscribe",
+)
+FIRST_PERSON_MARKERS = (" i ", " i've ", " i'm ", " my ", " we ", " our ")
+STRUCTURED_TEXT_KEYS = {
+    "articlebody", "description", "body", "content", "text", "workout", "wod", "post", "entry", "blocks"
+}
 
 
 @dataclass(slots=True)
@@ -98,6 +107,25 @@ def _prune_non_content_zones(soup: BeautifulSoup) -> None:
             node.decompose()
 
 
+def _comment_like_reasons(text: str) -> list[str]:
+    low = f" {text.lower()} "
+    reasons: list[str] = []
+    marker_hits = sum(1 for marker in COMMENT_LIKE_MARKERS if marker in low)
+    if marker_hits:
+        reasons.append(f"comment markers={marker_hits}")
+    first_person_hits = sum(1 for marker in FIRST_PERSON_MARKERS if marker in low)
+    if first_person_hits >= 2:
+        reasons.append(f"first-person markers={first_person_hits}")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines and len(lines) <= 4 and marker_hits >= 1 and "workout of the day" not in low:
+        reasons.append("short anecdotal comment shape")
+    return reasons
+
+
+def is_comment_like_text(text: str) -> bool:
+    return bool(_comment_like_reasons(text))
+
+
 def _describe_tag(tag: Tag) -> str:
     if tag.get("id"):
         return f"{tag.name}#{tag.get('id')}"
@@ -141,7 +169,18 @@ def _score_candidate(tag: Tag, text: str) -> tuple[int, list[str]]:
         score += 2
         reasons.append("semantic content tag")
 
+    comment_reasons = _comment_like_reasons(text)
+    if comment_reasons:
+        score -= 20
+        reasons.extend(comment_reasons)
+
     return score, reasons
+
+
+def _score_text_candidate(text: str) -> tuple[int, list[str]]:
+    pseudo = BeautifulSoup("<article></article>", "lxml").article
+    assert pseudo is not None
+    return _score_candidate(pseudo, text)
 
 
 def _collect_content_candidates(soup: BeautifulSoup) -> list[tuple[str, Tag]]:
@@ -184,28 +223,145 @@ def choose_content_container(html: str) -> tuple[Tag | None, str, str, int]:
     return best
 
 
-def explain_main_text_choice(html: str) -> dict[str, str | int | None]:
-    tag, selector, rationale, score = choose_content_container(html)
+def _extract_json_candidates(payload, path: str = "$") -> list[tuple[str, str]]:
+    candidates: list[tuple[str, str]] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            key_low = key.lower()
+            child_path = f"{path}.{key}"
+            if isinstance(value, str) and key_low in STRUCTURED_TEXT_KEYS and len(value.strip()) >= 20:
+                candidates.append((child_path, value.strip()))
+            else:
+                candidates.extend(_extract_json_candidates(value, child_path))
+    elif isinstance(payload, list):
+        for idx, item in enumerate(payload):
+            candidates.extend(_extract_json_candidates(item, f"{path}[{idx}]"))
+    elif isinstance(payload, str) and len(payload.strip()) >= 40 and any(marker in payload.lower() for marker in STRONG_WOD_TEXT_MARKERS):
+        candidates.append((path, payload.strip()))
+    return candidates
+
+
+def _parse_json_blobs(soup: BeautifulSoup) -> list[tuple[str, object]]:
+    blobs: list[tuple[str, object]] = []
+    for idx, script in enumerate(soup.find_all("script")):
+        raw = (script.string or script.get_text() or "").strip()
+        if not raw:
+            continue
+        script_id = script.get("id")
+        script_type = (script.get("type") or "").lower()
+        label = f"script[{idx}]"
+        if script_id:
+            label += f"#{script_id}"
+
+        if "application/ld+json" in script_type:
+            try:
+                blobs.append((label, json.loads(raw)))
+            except json.JSONDecodeError:
+                continue
+            continue
+
+        if script_id == "__NEXT_DATA__":
+            try:
+                blobs.append((label, json.loads(raw)))
+            except json.JSONDecodeError:
+                continue
+            continue
+
+        if "{" not in raw or "}" not in raw:
+            continue
+
+        for match in re.finditer(r"(\{[\s\S]{40,}\})", raw):
+            chunk = match.group(1).strip().rstrip(";")
+            try:
+                blobs.append((f"{label}:blob", json.loads(chunk)))
+            except json.JSONDecodeError:
+                continue
+
+    return blobs
+
+
+def select_best_text_source(html: str) -> dict:
+    rejected: list[dict[str, str | int]] = []
+    soup = BeautifulSoup(html, "lxml")
+
+    best_text = ""
+    best_score = -10_000
+    best_source = "fallback"
+    best_locator = "body"
+    best_rationale = "no candidate"
+
+    # Layer A: structured JSON / hydration payloads.
+    for blob_label, payload in _parse_json_blobs(soup):
+        for path, text in _extract_json_candidates(payload, blob_label):
+            score, reasons = _score_text_candidate(text)
+            if score > best_score:
+                best_text = text
+                best_score = score
+                best_source = "structured_json"
+                best_locator = path
+                best_rationale = "; ".join(reasons) if reasons else "structured candidate"
+            else:
+                rejected.append({"source": "structured_json", "locator": path, "score": score, "reason": "; ".join(reasons)})
+
+    # Layer B: DOM candidate fallback.
+    dom_soup = BeautifulSoup(html, "lxml")
+    _prune_non_content_zones(dom_soup)
+    for label, tag in _collect_content_candidates(dom_soup):
+        text = tag.get_text("\n", strip=True)
+        if len(text) < 20:
+            continue
+        score, reasons = _score_candidate(tag, text)
+        if score > best_score:
+            best_text = text
+            best_score = score
+            best_source = "dom"
+            best_locator = label
+            best_rationale = "; ".join(reasons) if reasons else "dom candidate"
+        else:
+            rejected.append({"source": "dom", "locator": label, "score": score, "reason": "; ".join(reasons)})
+
+    if not best_text:
+        fallback_soup = BeautifulSoup(html, "lxml")
+        _prune_non_content_zones(fallback_soup)
+        best_text = fallback_soup.get_text("\n", strip=True)
+        best_score = -500
+        best_source = "fallback"
+        best_locator = "body"
+        best_rationale = "fallback after candidate miss"
+
+    preview = " ".join(best_text.split())[:180]
     return {
-        "selector": selector,
-        "rationale": rationale,
-        "score": score,
-        "container": _describe_tag(tag) if tag else None,
+        "source_type": best_source,
+        "locator": best_locator,
+        "score": best_score,
+        "rationale": best_rationale,
+        "preview": preview,
+        "text": best_text,
+        "rejected": rejected[:40],
+    }
+
+
+def explain_main_text_choice(html: str) -> dict[str, str | int | None]:
+    details = select_best_text_source(html)
+    return {
+        "source_type": details["source_type"],
+        "selector": details["locator"],
+        "rationale": details["rationale"],
+        "score": details["score"],
+        "container": details["locator"],
+        "preview": details["preview"],
+        "rejected": details["rejected"],
     }
 
 
 def extract_main_text_from_html(html: str) -> str:
-    tag, _, _, score = choose_content_container(html)
-    if tag is not None and score > -1000:
-        return tag.get_text("\n", strip=True)
-
-    soup = BeautifulSoup(html, "lxml")
-    _prune_non_content_zones(soup)
-    return soup.get_text("\n", strip=True)
+    return str(select_best_text_source(html)["text"])
 
 
 def classify_page(soup: BeautifulSoup, text: str) -> str:
     low = text.lower()
+    if is_comment_like_text(text):
+        return "unknown"
     rest_hits = sum(1 for marker in REST_MARKERS if marker in low)
     format_hits = sum(1 for marker in WOD_FORMAT_MARKERS if marker in low)
     structure_hits = len(soup.select("article li, article h2, article h3, article p, main li, main h2, main h3, main p"))
