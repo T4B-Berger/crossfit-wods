@@ -37,3 +37,9 @@ streamlit run app/Home.py
 - Le parseur est volontairement conservateur.
 - Les unités impériales sont conservées, avec conversion SI en parallèle.
 - Les filières énergétiques sont stockées en terminologie française.
+
+## Détection WOD (évolutions récentes)
+- **Strength WOD detection** : meilleure reconnaissance des WODs de force historiques (ex. formulations type `find your best`, schémas `5,3,1 reps`, lifts classiques).
+- **Editorial block stopping** : lorsqu'un bloc WOD valide est détecté, l'extraction s'arrête avant les sections éditoriales/ressources (articles, liens externes, etc.).
+- **Monostructural WOD support** : prise en charge des formats simples mono-mouvement (ex. rounds + run avec distance mesurable).
+- **Règle conservatrice** : un WOD n'est validé que si on retrouve **structure d'entraînement + mouvement + quantité mesurable** (reps, distance ou temps).
