@@ -11,6 +11,20 @@ MOVEMENT_PATTERNS = [
     "burpee", "run", "row", "double-under", "toes-to-bar", "muscle-up", "wall-ball",
 ]
 
+FORMAT_PATTERNS = {
+    "amrap": re.compile(r"\bamrap\b", re.IGNORECASE),
+    "for_time": re.compile(r"\bfor time\b", re.IGNORECASE),
+    "emom": re.compile(r"\bemom\b", re.IGNORECASE),
+    "tabata": re.compile(r"\btabata\b", re.IGNORECASE),
+}
+
+RPE_PATTERN = re.compile(r"\brpe\s*[:\-]?\s*(\d{1,2}(?:\.\d)?)", re.IGNORECASE)
+LOAD_PATTERN = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s?(?P<unit>kg|kgs|lb|lbs|pood|poods)\b", re.IGNORECASE)
+DISTANCE_PATTERN = re.compile(
+    r"(?P<value>\d+(?:\.\d+)?)\s?(?P<unit>m|meter|meters|metre|metres|km|mi|mile|miles|yd|yard|yards|ft|foot|feet)\b",
+    re.IGNORECASE,
+)
+
 
 def detect_movements(text: str) -> list[dict]:
     found: list[dict] = []
@@ -24,6 +38,54 @@ def detect_movements(text: str) -> list[dict]:
 def extract_title(text: str) -> str | None:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     return lines[0][:200] if lines else None
+
+
+def extract_notes(text: str) -> str | None:
+    note_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and any(marker in line.lower() for marker in ["note", "scaling", "tips", "modify"])
+    ]
+    if not note_lines:
+        return None
+    return "\n".join(note_lines)
+
+
+def detect_workout_format(text: str) -> str | None:
+    for name, pattern in FORMAT_PATTERNS.items():
+        if pattern.search(text):
+            return name
+    return None
+
+
+def extract_rpe_source(text: str) -> str | None:
+    match = RPE_PATTERN.search(text)
+    if not match:
+        return None
+    return f"RPE {match.group(1)}"
+
+
+def extract_measurements(text: str) -> list[dict]:
+    entries: list[dict] = []
+    for match in LOAD_PATTERN.finditer(text):
+        entries.append(
+            {
+                "kind": "load",
+                "value_source": float(match.group("value")),
+                "unit_source": match.group("unit").lower(),
+                "context": match.group(0),
+            }
+        )
+    for match in DISTANCE_PATTERN.finditer(text):
+        entries.append(
+            {
+                "kind": "distance",
+                "value_source": float(match.group("value")),
+                "unit_source": match.group("unit").lower(),
+                "context": match.group(0),
+            }
+        )
+    return entries
 
 
 def classify_record(page_type: str, raw_text: str | None) -> tuple[str, int, int, int, str | None]:
@@ -42,6 +104,10 @@ def parse_one(row) -> dict:
     raw_text = row["raw_text"] or ""
     record_status, is_rest_day, is_missing, is_editorial_only, wod_text = classify_record(row["page_type"], raw_text)
     movements = detect_movements(raw_text)
+    measurements = extract_measurements(raw_text)
+    workout_format = detect_workout_format(raw_text)
+    rpe_source = extract_rpe_source(raw_text)
+
     tags = []
     if is_rest_day:
         tags.append("rest_day")
@@ -49,6 +115,11 @@ def parse_one(row) -> dict:
         tags.append("editorial_only")
     if movements:
         tags.append("has_movements")
+    if measurements:
+        tags.append("has_measurements")
+    if workout_format:
+        tags.append(f"format:{workout_format}")
+
     return {
         "wod_date": row["wod_date"],
         "source_url": row["resolved_url"],
@@ -59,12 +130,59 @@ def parse_one(row) -> dict:
         "is_editorial_only": is_editorial_only,
         "title": extract_title(raw_text),
         "wod_text": wod_text,
-        "notes_text": None,
+        "notes_text": extract_notes(raw_text),
         "score_text": None,
         "compare_to_text": None,
-        "movement_list_json": json.dumps(movements, ensure_ascii=False),
+        "rpe_source": rpe_source,
+        "workout_format": workout_format,
+        "movement_list_json": json.dumps(movements + measurements, ensure_ascii=False),
         "tags_json": json.dumps(tags, ensure_ascii=False),
     }
+
+
+def upsert_movements(conn, wod_date: str, entities_json: str) -> None:
+    entities = json.loads(entities_json or "[]")
+    conn.execute("DELETE FROM movements WHERE wod_date = ?", (wod_date,))
+    for entity in entities:
+        if entity.get("kind") == "load":
+            conn.execute(
+                """
+                INSERT INTO movements (wod_date, load_value_source, load_unit_source, context_text)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    wod_date,
+                    entity.get("value_source"),
+                    entity.get("unit_source"),
+                    entity.get("context"),
+                ),
+            )
+        elif entity.get("kind") == "distance":
+            conn.execute(
+                """
+                INSERT INTO movements (wod_date, distance_value_source, distance_unit_source, context_text)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    wod_date,
+                    entity.get("value_source"),
+                    entity.get("unit_source"),
+                    entity.get("context"),
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO movements (wod_date, movement_raw, movement_norm, context_text)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    wod_date,
+                    entity.get("movement_raw"),
+                    entity.get("movement_norm"),
+                    entity.get("movement_raw"),
+                ),
+            )
 
 
 def main() -> None:
@@ -93,8 +211,8 @@ def main() -> None:
                     INSERT INTO daily_wods (
                         wod_date, source_url, record_status, page_type, is_rest_day, is_missing,
                         is_editorial_only, title, wod_text, notes_text, score_text, compare_to_text,
-                        movement_list_json, tags_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        rpe_source, workout_format, movement_list_json, tags_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(wod_date) DO UPDATE SET
                         source_url=excluded.source_url,
                         record_status=excluded.record_status,
@@ -107,6 +225,8 @@ def main() -> None:
                         notes_text=excluded.notes_text,
                         score_text=excluded.score_text,
                         compare_to_text=excluded.compare_to_text,
+                        rpe_source=excluded.rpe_source,
+                        workout_format=excluded.workout_format,
                         movement_list_json=excluded.movement_list_json,
                         tags_json=excluded.tags_json,
                         last_updated_at=CURRENT_TIMESTAMP
@@ -115,9 +235,10 @@ def main() -> None:
                         payload["wod_date"], payload["source_url"], payload["record_status"], payload["page_type"],
                         payload["is_rest_day"], payload["is_missing"], payload["is_editorial_only"], payload["title"],
                         payload["wod_text"], payload["notes_text"], payload["score_text"], payload["compare_to_text"],
-                        payload["movement_list_json"], payload["tags_json"],
+                        payload["rpe_source"], payload["workout_format"], payload["movement_list_json"], payload["tags_json"],
                     ),
                 )
+                upsert_movements(conn, payload["wod_date"], payload["movement_list_json"])
                 conn.execute(
                     "UPDATE daily_pages SET parse_status = 'parsed', parse_error = NULL WHERE wod_date = ?",
                     (payload["wod_date"],),
