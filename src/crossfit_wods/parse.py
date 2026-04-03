@@ -19,11 +19,12 @@ FORMAT_PATTERNS = {
 }
 
 RPE_PATTERN = re.compile(r"\brpe\s*[:\-]?\s*(\d{1,2}(?:\.\d)?)", re.IGNORECASE)
-LOAD_PATTERN = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s?(?P<unit>kg|kgs|lb|lbs|pood|poods)\b", re.IGNORECASE)
+LOAD_PATTERN = re.compile(r"\b(?P<value>\d+(?:\.\d+)?)\s?(?P<unit>kg|kgs|lb|lbs|pood|poods)\b", re.IGNORECASE)
 DISTANCE_PATTERN = re.compile(
-    r"(?P<value>\d+(?:\.\d+)?)\s?(?P<unit>m|meter|meters|metre|metres|km|mi|mile|miles|yd|yard|yards|ft|foot|feet)\b",
+    r"\b(?P<value>\d+(?:\.\d+)?)\s?(?P<unit>m|meter|meters|metre|metres|km|mi|mile|miles|yd|yard|yards|ft|foot|feet)\b",
     re.IGNORECASE,
 )
+STOP_BLOCK_MARKERS = ("related", "comments", "share", "podcast", "newsletter", "watch")
 
 
 def detect_movements(text: str) -> list[dict]:
@@ -88,6 +89,36 @@ def extract_measurements(text: str) -> list[dict]:
     return entries
 
 
+def extract_wod_block(raw_text: str) -> tuple[str | None, bool]:
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not lines:
+        return None, True
+
+    start_idx = None
+    for idx, line in enumerate(lines):
+        line_low = line.lower()
+        if any(pattern.search(line_low) for pattern in FORMAT_PATTERNS.values()):
+            start_idx = idx
+            break
+
+    if start_idx is None:
+        return None, True
+
+    block: list[str] = []
+    for line in lines[start_idx:start_idx + 25]:
+        line_low = line.lower()
+        if any(marker in line_low for marker in STOP_BLOCK_MARKERS) and len(block) >= 2:
+            break
+        block.append(line)
+
+    wod_block = "\n".join(block).strip()
+    has_measure_or_movement = bool(extract_measurements(wod_block) or detect_movements(wod_block))
+    is_ambiguous = len(block) < 2 or not has_measure_or_movement
+    if not wod_block:
+        return None, True
+    return wod_block, is_ambiguous
+
+
 def classify_record(page_type: str, raw_text: str | None) -> tuple[str, int, int, int, str | None]:
     if page_type == "not_found":
         return "missing_page", 0, 1, 0, None
@@ -103,10 +134,20 @@ def classify_record(page_type: str, raw_text: str | None) -> tuple[str, int, int
 def parse_one(row) -> dict:
     raw_text = row["raw_text"] or ""
     record_status, is_rest_day, is_missing, is_editorial_only, wod_text = classify_record(row["page_type"], raw_text)
-    movements = detect_movements(raw_text)
-    measurements = extract_measurements(raw_text)
-    workout_format = detect_workout_format(raw_text)
-    rpe_source = extract_rpe_source(raw_text)
+
+    parse_text = raw_text
+    if row["page_type"] == "wod":
+        wod_block, ambiguous_wod = extract_wod_block(raw_text)
+        if wod_block:
+            wod_text = wod_block
+            parse_text = wod_block
+        if ambiguous_wod:
+            record_status = "needs_review"
+
+    movements = detect_movements(parse_text)
+    measurements = extract_measurements(parse_text)
+    workout_format = detect_workout_format(parse_text)
+    rpe_source = extract_rpe_source(parse_text)
 
     tags = []
     if is_rest_day:
@@ -119,6 +160,8 @@ def parse_one(row) -> dict:
         tags.append("has_measurements")
     if workout_format:
         tags.append(f"format:{workout_format}")
+    if record_status == "needs_review":
+        tags.append("needs_review")
 
     return {
         "wod_date": row["wod_date"],
@@ -130,7 +173,7 @@ def parse_one(row) -> dict:
         "is_editorial_only": is_editorial_only,
         "title": extract_title(raw_text),
         "wod_text": wod_text,
-        "notes_text": extract_notes(raw_text),
+        "notes_text": extract_notes(parse_text),
         "score_text": None,
         "compare_to_text": None,
         "rpe_source": rpe_source,
