@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -10,6 +11,11 @@ import requests
 from bs4 import BeautifulSoup
 
 USER_AGENT = "Mozilla/5.0 (compatible; CrossfitWodsBot/0.1; +https://github.com/)"
+
+REST_MARKERS = ("rest day", "restday")
+WOD_FORMAT_MARKERS = ("for time", "amrap", "emom", "tabata", "rounds for time")
+EDITORIAL_MARKERS = ("crossfit games", "nutrition", "podcast", "article", "opinion")
+WOD_STRUCTURE_RE = re.compile(r"(^|\s)(\d+(?:\s*[-x]\s*\d+)+|\d+\s*rounds?)", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -47,20 +53,30 @@ def fetch_day(d: date, timeout: int = 20) -> FetchResult:
     soup = BeautifulSoup(html, "lxml")
     text = soup.get_text("\n", strip=True)
     content_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
-    page_type = classify_page(text)
+    page_type = classify_page(soup, text)
     return FetchResult(d.isoformat(), url, response.url, "success", response.status_code, content_hash, page_type, text, html)
 
 
-def classify_page(text: str) -> str:
+def classify_page(soup: BeautifulSoup, text: str) -> str:
     low = text.lower()
-    if "rest day" in low:
+    rest_hits = sum(1 for marker in REST_MARKERS if marker in low)
+    format_hits = sum(1 for marker in WOD_FORMAT_MARKERS if marker in low)
+    structure_hits = len(soup.select("article ul li, article ol li, article h2, article h3"))
+    wod_line_hits = sum(1 for line in text.splitlines() if WOD_STRUCTURE_RE.search(line))
+    editorial_hits = sum(1 for marker in EDITORIAL_MARKERS if marker in low)
+
+    if rest_hits and format_hits == 0:
         return "rest_day"
-    markers = ["for time", "amrap", "tabata", "rounds for time", "complete as many rounds", "then", "reps"]
-    if sum(1 for m in markers if m in low) >= 2:
+
+    strong_wod_signal = (format_hits >= 2 or wod_line_hits >= 2) or (format_hits >= 1 and wod_line_hits >= 1)
+    has_workout_structure = structure_hits >= 2
+    if strong_wod_signal and has_workout_structure:
         return "wod"
-    if len(text) < 120:
-        return "unknown"
-    return "editorial_only"
+
+    if len(text) >= 180 and editorial_hits >= 1 and not strong_wod_signal:
+        return "editorial_only"
+
+    return "unknown"
 
 
 def persist_html(html_root: str | Path, wod_date: str, html: str) -> str:
