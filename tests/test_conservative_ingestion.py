@@ -6,7 +6,7 @@ import unittest
 from bs4 import BeautifulSoup
 
 from crossfit_wods.parse import extract_wod_block, parse_one
-from crossfit_wods.scraper import classify_page
+from crossfit_wods.scraper import classify_page, extract_main_text_from_html, explain_main_text_choice
 
 
 class ConservativeIngestionTests(unittest.TestCase):
@@ -146,6 +146,47 @@ class ConservativeIngestionTests(unittest.TestCase):
         }
         payload = parse_one(row)
         self.assertEqual(payload["record_status"], "needs_review")
+
+    def test_extract_main_text_ignores_comment_reply_and_footer_blocks(self) -> None:
+        html = """
+        <html><body>
+          <main>
+            <article id="post-1" class="entry-content">
+              <h2>Workout of the Day</h2>
+              <p>For Time</p>
+              <p>4 rounds, each for time of:</p>
+              <p>800-meter run</p>
+            </article>
+          </main>
+          <section id="comments">
+            <p>Yesterday I did this with a vest.</p>
+            <a>Reply</a>
+          </section>
+          <footer>
+            <p>Next Post</p>
+          </footer>
+        </body></html>
+        """
+        text = extract_main_text_from_html(html)
+        self.assertIn("4 rounds, each for time of:", text)
+        self.assertNotIn("Yesterday I did", text)
+        self.assertNotIn("Reply", text)
+        self.assertNotIn("Next Post", text)
+
+    def test_explain_main_text_choice_returns_candidate_debug_info(self) -> None:
+        html = """
+        <html><body>
+          <article class="entry-content">
+            <h2>Workout of the Day</h2>
+            <p>AMRAP 10</p>
+            <p>Run 400 m</p>
+          </article>
+        </body></html>
+        """
+        info = explain_main_text_choice(html)
+        self.assertIn("selector", info)
+        self.assertIn("rationale", info)
+        self.assertIsNotNone(info["container"])
 
 
 if __name__ == "__main__":
