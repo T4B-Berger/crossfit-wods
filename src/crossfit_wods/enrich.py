@@ -106,6 +106,7 @@ def main() -> None:
                     time_domain_code = ?,
                     time_domain_label_fr = ?,
                     rpe_inferred = ?,
+                    rpe_inference_method = ?,
                     rpe_confidence = ?,
                     enrichment_version = 'v2',
                     last_updated_at = CURRENT_TIMESTAMP
@@ -120,7 +121,8 @@ def main() -> None:
                     td_code,
                     TIME_DOMAIN_LABELS[td_code],
                     rpe_value,
-                    f"{rpe_method}:{rpe_conf}",
+                    rpe_method,
+                    rpe_conf,
                     row["wod_date"],
                 ),
             )

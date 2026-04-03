@@ -4,15 +4,19 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+ALLOWED_FETCH_STATUS = ("pending", "success", "not_found", "timeout", "http_error", "network_error")
+ALLOWED_PAGE_TYPE = ("wod", "rest_day", "editorial_only", "not_found", "unknown")
+ALLOWED_RECORD_STATUS = ("valid_wod", "valid_rest_day", "missing_page", "editorial_ignored", "needs_review")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS daily_pages (
     wod_date TEXT PRIMARY KEY,
     expected_url TEXT NOT NULL,
     resolved_url TEXT,
-    fetch_status TEXT NOT NULL DEFAULT 'pending',
+    fetch_status TEXT NOT NULL DEFAULT 'pending' CHECK (fetch_status IN ('pending', 'success', 'not_found', 'timeout', 'http_error', 'network_error')),
     http_status INTEGER,
     content_hash TEXT,
-    page_type TEXT NOT NULL DEFAULT 'unknown',
+    page_type TEXT NOT NULL DEFAULT 'unknown' CHECK (page_type IN ('wod', 'rest_day', 'editorial_only', 'not_found', 'unknown')),
     scraped_at TEXT,
     parse_status TEXT NOT NULL DEFAULT 'pending',
     parse_error TEXT,
@@ -23,8 +27,8 @@ CREATE TABLE IF NOT EXISTS daily_pages (
 CREATE TABLE IF NOT EXISTS daily_wods (
     wod_date TEXT PRIMARY KEY,
     source_url TEXT,
-    record_status TEXT NOT NULL,
-    page_type TEXT NOT NULL,
+    record_status TEXT NOT NULL CHECK (record_status IN ('valid_wod', 'valid_rest_day', 'missing_page', 'editorial_ignored', 'needs_review')),
+    page_type TEXT NOT NULL CHECK (page_type IN ('wod', 'rest_day', 'editorial_only', 'not_found', 'unknown')),
     is_rest_day INTEGER NOT NULL DEFAULT 0,
     is_missing INTEGER NOT NULL DEFAULT 0,
     is_editorial_only INTEGER NOT NULL DEFAULT 0,
@@ -34,6 +38,7 @@ CREATE TABLE IF NOT EXISTS daily_wods (
     score_text TEXT,
     compare_to_text TEXT,
     rpe_source TEXT,
+    rpe_inference_method TEXT,
     rpe_inferred REAL,
     rpe_confidence TEXT,
     energy_system_primary TEXT,
@@ -73,6 +78,64 @@ CREATE TABLE IF NOT EXISTS movements (
 );
 """
 
+STATUS_VALIDATION_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS trg_daily_pages_fetch_status_insert
+BEFORE INSERT ON daily_pages
+WHEN NEW.fetch_status NOT IN ('pending', 'success', 'not_found', 'timeout', 'http_error', 'network_error')
+BEGIN
+    SELECT RAISE(FAIL, 'invalid fetch_status');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_daily_pages_fetch_status_update
+BEFORE UPDATE OF fetch_status ON daily_pages
+WHEN NEW.fetch_status NOT IN ('pending', 'success', 'not_found', 'timeout', 'http_error', 'network_error')
+BEGIN
+    SELECT RAISE(FAIL, 'invalid fetch_status');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_daily_pages_page_type_insert
+BEFORE INSERT ON daily_pages
+WHEN NEW.page_type NOT IN ('wod', 'rest_day', 'editorial_only', 'not_found', 'unknown')
+BEGIN
+    SELECT RAISE(FAIL, 'invalid page_type');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_daily_pages_page_type_update
+BEFORE UPDATE OF page_type ON daily_pages
+WHEN NEW.page_type NOT IN ('wod', 'rest_day', 'editorial_only', 'not_found', 'unknown')
+BEGIN
+    SELECT RAISE(FAIL, 'invalid page_type');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_daily_wods_record_status_insert
+BEFORE INSERT ON daily_wods
+WHEN NEW.record_status NOT IN ('valid_wod', 'valid_rest_day', 'missing_page', 'editorial_ignored', 'needs_review')
+BEGIN
+    SELECT RAISE(FAIL, 'invalid record_status');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_daily_wods_record_status_update
+BEFORE UPDATE OF record_status ON daily_wods
+WHEN NEW.record_status NOT IN ('valid_wod', 'valid_rest_day', 'missing_page', 'editorial_ignored', 'needs_review')
+BEGIN
+    SELECT RAISE(FAIL, 'invalid record_status');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_daily_wods_page_type_insert
+BEFORE INSERT ON daily_wods
+WHEN NEW.page_type NOT IN ('wod', 'rest_day', 'editorial_only', 'not_found', 'unknown')
+BEGIN
+    SELECT RAISE(FAIL, 'invalid page_type');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_daily_wods_page_type_update
+BEFORE UPDATE OF page_type ON daily_wods
+WHEN NEW.page_type NOT IN ('wod', 'rest_day', 'editorial_only', 'not_found', 'unknown')
+BEGIN
+    SELECT RAISE(FAIL, 'invalid page_type');
+END;
+"""
+
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path)
@@ -82,9 +145,17 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def ensure_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(daily_wods)")}
+    if "rpe_inference_method" not in columns:
+        conn.execute("ALTER TABLE daily_wods ADD COLUMN rpe_inference_method TEXT")
+
+
 def init_db(db_path: str | Path) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        ensure_columns(conn)
+        conn.executescript(STATUS_VALIDATION_TRIGGERS)
         conn.commit()
 
 
