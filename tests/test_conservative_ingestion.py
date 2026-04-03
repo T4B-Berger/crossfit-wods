@@ -451,6 +451,40 @@ class ConservativeIngestionTests(unittest.TestCase):
         payload = parse_one(row)
         self.assertEqual(payload["record_status"], "valid_wod")
 
+    def test_parse_one_cta_and_richer_wod_block_prefers_valid_wod(self) -> None:
+        row = {
+            "wod_date": "2026-03-20",
+            "resolved_url": "https://www.crossfit.com/workout/2026/03/20",
+            "page_type": "unknown",
+            "raw_text": (
+                "Learn the Movement →\nRead More\n\n"
+                "Workout of the Day\n"
+                "5 rounds for time of:\n"
+                "10 thrusters (95 lb)\n"
+                "200 m run"
+            ),
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "valid_wod")
+        self.assertEqual(payload["workout_format"], "for_time")
+
+    def test_parse_one_strength_skill_with_competing_cta_is_valid_wod(self) -> None:
+        row = {
+            "wod_date": "2026-03-23",
+            "resolved_url": "https://www.crossfit.com/workout/2026/03/23",
+            "page_type": "unknown",
+            "raw_text": (
+                "Check Out the Open Leaderboard\n\n"
+                "Workout of the Day\n"
+                "Every 5 minutes for 7 sets, for load:\n"
+                "2 hang power snatch\n"
+                "2 overhead squat"
+            ),
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "valid_wod")
+        self.assertEqual(payload["workout_format"], "strength_skill")
+
 
 if __name__ == "__main__":
     unittest.main()

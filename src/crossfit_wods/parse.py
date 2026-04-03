@@ -282,6 +282,10 @@ def score_wod_block(text: str) -> tuple[int, list[str]]:
         score -= 8
         reasons.append("site/chrome noise")
 
+    if PROMO_CTA_RE.search(text):
+        score -= 6
+        reasons.append("promo cta markers")
+
     return score, reasons
 
 
@@ -290,16 +294,33 @@ def select_main_wod_block(raw_text: str) -> tuple[str | None, bool, int, list[st
     if not blocks:
         return None, True, -999, ["no blocks"]
 
-    best_block: str | None = None
-    best_score = -999
-    best_reasons: list[str] = []
-
+    candidates: list[dict] = []
     for block in blocks:
         score, reasons = score_wod_block(block)
-        if score > best_score:
-            best_block = block
-            best_score = score
-            best_reasons = reasons
+        has_structure = bool(STRUCTURE_RE.search(block) or WOD_STRUCTURE_RE.search(block) or is_strength_line(block) or STRENGTH_SCHEME_RE.search(block))
+        has_movement = bool(detect_movements(block))
+        has_measurable = has_measurable_quantity(block)
+        promo_like = bool(PROMO_CTA_RE.search(block))
+        candidates.append(
+            {
+                "block": block,
+                "score": score,
+                "reasons": reasons,
+                "has_structure": has_structure,
+                "has_movement": has_movement,
+                "has_measurable": has_measurable,
+                "promo_like": promo_like,
+            }
+        )
+
+    strong_candidates = [
+        c for c in candidates if c["has_structure"] and c["has_movement"] and c["has_measurable"] and c["score"] >= 6
+    ]
+    ranked_pool = strong_candidates if strong_candidates else candidates
+    winner = max(ranked_pool, key=lambda c: c["score"], default=None)
+    best_block = winner["block"] if winner else None
+    best_score = int(winner["score"]) if winner else -999
+    best_reasons = list(winner["reasons"]) if winner else []
 
     if not best_block:
         return None, True, -999, ["no best block"]
@@ -353,6 +374,7 @@ def finalize_record_status(
     movements: list[dict],
     measurements: list[dict],
     block_score: int | None,
+    richer_wod_exists: bool = False,
 ) -> tuple[str, int, int, int]:
     low = parse_text.lower()
     has_movement = bool(movements)
@@ -367,7 +389,7 @@ def finalize_record_status(
     if is_rest:
         return "valid_rest_day", 1, 0, 0
 
-    if promo_like and not has_structure and not has_measurement:
+    if promo_like and not richer_wod_exists and not has_structure and not has_measurement:
         return "editorial_ignored", 0, 0, 1
 
     strong_format = workout_format in {"for_time", "amrap", "tabata", "emom", "strength", "strength_skill", "mixed"}
@@ -405,11 +427,22 @@ def parse_one(row) -> dict:
     parse_text = raw_text
     block_score = None
     block_reasons: list[str] = []
+    richer_wod_exists = False
     if row["page_type"] != "not_found":
         wod_block, ambiguous_wod, block_score, block_reasons = select_main_wod_block(raw_text)
         if wod_block:
             wod_text = wod_block
             parse_text = wod_block
+            for candidate in split_into_blocks(raw_text):
+                if candidate.strip() == wod_block.strip():
+                    continue
+                c_score, _ = score_wod_block(candidate)
+                c_structure = bool(STRUCTURE_RE.search(candidate) or WOD_STRUCTURE_RE.search(candidate) or is_strength_line(candidate) or STRENGTH_SCHEME_RE.search(candidate))
+                c_movement = bool(detect_movements(candidate))
+                c_measure = has_measurable_quantity(candidate)
+                if c_score >= 6 and c_structure and c_movement and c_measure:
+                    richer_wod_exists = True
+                    break
         if ambiguous_wod and record_status == "valid_wod":
             record_status = "needs_review"
 
@@ -426,6 +459,7 @@ def parse_one(row) -> dict:
             movements=movements,
             measurements=measurements,
             block_score=block_score,
+            richer_wod_exists=richer_wod_exists,
         )
 
     tags = []
