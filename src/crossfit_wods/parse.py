@@ -26,10 +26,13 @@ STRENGTH_KEYWORD_RE = re.compile(r"\b(?:find\s+your\s+best|best\s+\w+|1\s*rep|3\
 RPE_PATTERN = re.compile(r"\brpe\s*[:\-]?\s*(\d{1,2}(?:\.\d)?)", re.IGNORECASE)
 LOAD_PATTERN = re.compile(r"\b(?P<value>\d+(?:\.\d+)?)\s?(?P<unit>kg|kgs|lb|lbs|pood|poods)\b", re.IGNORECASE)
 DISTANCE_PATTERN = re.compile(
-    r"\b(?P<value>\d+(?:\.\d+)?)\s?(?P<unit>m|meter|meters|metre|metres|km|mi|mile|miles|yd|yard|yards|ft|foot|feet)\b",
+    r"\b(?P<value>\d+(?:\.\d+)?)\s*(?:-|–|—)?\s*(?P<unit>m|meter|meters|metre|metres|km|mi|mile|miles|yd|yard|yards|ft|foot|feet)\b",
     re.IGNORECASE,
 )
 WOD_STRUCTURE_RE = re.compile(r"(^|\s)(\d+(?:\s*[-x]\s*\d+)+|\d+\s*rounds?)", re.IGNORECASE)
+STRUCTURE_RE = re.compile(r"\b(?:for time|each for time|amrap|emom|tabata|\d+\s*rounds?)\b", re.IGNORECASE)
+MEASURABLE_REPS_RE = re.compile(r"\b(?:\d+(?:\s*[-x]\s*\d+)+|\d+)\s*reps?\b", re.IGNORECASE)
+MEASURABLE_TIME_RE = re.compile(r"\b\d+\s*(?:sec(?:ond)?s?|min(?:ute)?s?|hours?)\b|\b\d+\s*:\s*\d+\b", re.IGNORECASE)
 STOP_BLOCK_MARKERS = ("related", "comments", "share", "podcast", "newsletter", "watch")
 EDITORIAL_LINE_MARKERS = ("resource", "resources", "read", "article", "link")
 
@@ -103,6 +106,12 @@ def extract_measurements(text: str) -> list[dict]:
     return entries
 
 
+def has_measurable_quantity(text: str) -> bool:
+    if MEASURABLE_REPS_RE.search(text) or MEASURABLE_TIME_RE.search(text):
+        return True
+    return any(entry.get("kind") == "distance" for entry in extract_measurements(text))
+
+
 def extract_wod_block(raw_text: str) -> tuple[str | None, bool]:
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     if not lines:
@@ -144,8 +153,10 @@ def extract_wod_block(raw_text: str) -> tuple[str | None, bool]:
         has_strength_prescription = has_strength_prescription or is_strength_line(line)
 
     wod_block = "\n".join(block).strip()
-    has_measure_or_movement = bool(extract_measurements(wod_block) or detect_movements(wod_block) or is_strength_line(wod_block))
-    is_ambiguous = len(block) < 2 or not has_measure_or_movement
+    has_movement = bool(detect_movements(wod_block))
+    has_measurable = has_measurable_quantity(wod_block)
+    has_structure = bool(STRUCTURE_RE.search(wod_block) or WOD_STRUCTURE_RE.search(wod_block) or is_strength_line(wod_block))
+    is_ambiguous = len(block) < 2 or not (has_structure and has_movement and has_measurable)
     if not wod_block:
         return None, True
     return wod_block, is_ambiguous

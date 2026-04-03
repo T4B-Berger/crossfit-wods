@@ -64,6 +64,23 @@ class ConservativeIngestionTests(unittest.TestCase):
         text = soup.get_text("\n", strip=True)
         self.assertEqual(classify_page(soup, text), "editorial_only")
 
+    def test_classify_page_detects_monostructural_rounds_for_time_wod(self) -> None:
+        html = """
+        <html><body><article>
+        <p>4 rounds, each for time of:</p>
+        <p>800-meter run</p>
+        </article></body></html>
+        """
+        soup = BeautifulSoup(html, "lxml")
+        text = soup.get_text("\n", strip=True)
+        self.assertEqual(classify_page(soup, text), "wod")
+
+    def test_classify_page_run_without_structure_is_not_wod(self) -> None:
+        html = "<html><body><article><p>Today we talk about run technique and pacing.</p></article></body></html>"
+        soup = BeautifulSoup(html, "lxml")
+        text = soup.get_text("\n", strip=True)
+        self.assertNotEqual(classify_page(soup, text), "wod")
+
     def test_extract_wod_block_ambiguous_without_measure_or_movement(self) -> None:
         block, ambiguous = extract_wod_block("Warm-up\nFor Time\nGo hard")
         self.assertIsNotNone(block)
@@ -105,6 +122,30 @@ class ConservativeIngestionTests(unittest.TestCase):
         self.assertEqual(payload["workout_format"], "strength")
         self.assertIn("bench-press", payload["wod_text"] or "")
         self.assertNotIn("https://", payload["wod_text"] or "")
+
+    def test_parse_one_monostructural_rounds_for_time_is_valid_wod(self) -> None:
+        row = {
+            "wod_date": "2002-01-01",
+            "resolved_url": "https://www.crossfit.com/workout/2002/01/01",
+            "page_type": "wod",
+            "raw_text": "4 rounds, each for time of:\n800-meter run",
+        }
+        payload = parse_one(row)
+        entities = json.loads(payload["movement_list_json"])
+        self.assertEqual(payload["record_status"], "valid_wod")
+        self.assertEqual(payload["workout_format"], "for_time")
+        self.assertTrue(any(entity.get("movement_norm") == "run" for entity in entities))
+        self.assertTrue(any(entity.get("kind") == "distance" and entity.get("value_source") == 800.0 for entity in entities))
+
+    def test_parse_one_run_without_structure_is_needs_review(self) -> None:
+        row = {
+            "wod_date": "2002-01-02",
+            "resolved_url": "https://www.crossfit.com/workout/2002/01/02",
+            "page_type": "wod",
+            "raw_text": "Run with good posture and breathing.",
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "needs_review")
 
 
 if __name__ == "__main__":
