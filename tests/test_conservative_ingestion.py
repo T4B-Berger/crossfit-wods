@@ -405,6 +405,52 @@ class ConservativeIngestionTests(unittest.TestCase):
         self.assertEqual(payload["record_status"], "valid_wod")
         self.assertEqual(payload["workout_format"], "strength_skill")
 
+    def test_parse_one_promo_cta_is_editorial_ignored(self) -> None:
+        row = {
+            "wod_date": "2026-03-10",
+            "resolved_url": "https://www.crossfit.com/workout/2026/03/10",
+            "page_type": "unknown",
+            "raw_text": "Check Out the Open Leaderboard\nWatch the 26.3 Recap\nRead More",
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "editorial_ignored")
+
+    def test_parse_one_structured_strength_skill_emom_is_valid_wod(self) -> None:
+        row = {
+            "wod_date": "2026-03-23",
+            "resolved_url": "https://www.crossfit.com/workout/2026/03/23",
+            "page_type": "unknown",
+            "raw_text": (
+                "Workout of the Day\n"
+                "Every 5 minutes for 7 sets, for load:\n"
+                "2 hang power snatch\n"
+                "2 overhead squat"
+            ),
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "valid_wod")
+        self.assertEqual(payload["workout_format"], "strength_skill")
+
+    def test_parse_one_rest_day_still_valid_rest_day(self) -> None:
+        row = {
+            "wod_date": "2026-04-02",
+            "resolved_url": "https://www.crossfit.com/workout/2026/04/02",
+            "page_type": "unknown",
+            "raw_text": "Workout of the Day\nRest Day",
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "valid_rest_day")
+
+    def test_parse_one_for_time_metcon_still_valid_wod(self) -> None:
+        row = {
+            "wod_date": "2026-04-03",
+            "resolved_url": "https://www.crossfit.com/workout/2026/04/03",
+            "page_type": "unknown",
+            "raw_text": "Workout of the Day\n5 rounds for time of:\n10 burpees\n200 m run",
+        }
+        payload = parse_one(row)
+        self.assertEqual(payload["record_status"], "valid_wod")
+
 
 if __name__ == "__main__":
     unittest.main()

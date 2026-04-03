@@ -45,6 +45,11 @@ FORMAT_PATTERNS = {
     "tabata": re.compile(r"\btabata\b", re.IGNORECASE),
 }
 COMMENT_BLOCK_RE = re.compile(r"\b(reply|leave a comment|verify email|yesterday i did|i modified)\b", re.IGNORECASE)
+PROMO_CTA_RE = re.compile(
+    r"\b(learn the movement|check (?:out )?the open leaderboard|check the leaderboard|"
+    r"watch the .*?(?:replay|recap)|read more|register for the open|log your score)\b",
+    re.IGNORECASE,
+)
 STRENGTH_LIFT_RE = re.compile(
     r"\b(?:back\s+squat|squat|deadlift|bench(?:-press|\s+press)?|press|clean|jerk|snatch)\b",
     re.IGNORECASE,
@@ -352,15 +357,32 @@ def finalize_record_status(
     low = parse_text.lower()
     has_movement = bool(movements)
     has_measurement = bool(measurements)
+    movement_hits = len(movements)
     has_structure = bool(STRUCTURE_RE.search(parse_text) or WOD_STRUCTURE_RE.search(parse_text) or is_strength_line(parse_text) or STRENGTH_SCHEME_RE.search(parse_text))
     score_ok = (block_score or -999) >= 6
+    promo_like = bool(PROMO_CTA_RE.search(parse_text))
+    teaser_like = (len(parse_text.strip()) < 220 and "today, we have" in low and not has_structure and not has_measurement)
 
     is_rest = workout_format == "rest_day" or ("rest day" in low and not has_measurement and not has_movement)
     if is_rest:
         return "valid_rest_day", 1, 0, 0
 
+    if promo_like and not has_structure and not has_measurement:
+        return "editorial_ignored", 0, 0, 1
+
     strong_format = workout_format in {"for_time", "amrap", "tabata", "emom", "strength", "strength_skill", "mixed"}
     strong_wod = strong_format and has_structure and has_movement and has_measurement and score_ok
+
+    strong_strength_skill = (
+        workout_format == "strength_skill"
+        and has_structure
+        and movement_hits >= 1
+        and (has_measurement or (block_score or -999) >= 9)
+        and not teaser_like
+    )
+    if strong_strength_skill:
+        return "valid_wod", 0, 0, 0
+
     if strong_wod:
         return "valid_wod", 0, 0, 0
 
