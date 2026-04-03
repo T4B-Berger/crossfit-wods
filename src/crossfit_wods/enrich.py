@@ -84,7 +84,9 @@ def main() -> None:
                 conn.execute(
                     """
                     UPDATE daily_wods
-                    SET enrichment_version = 'v2'
+                    SET enrichment_version = 'v2',
+                        rpe_inference_method = NULL,
+                        rpe_confidence = NULL
                     WHERE wod_date = ?
                     """,
                     (row["wod_date"],),
@@ -95,6 +97,8 @@ def main() -> None:
             movements = json.loads(row["movement_list_json"] or "[]")
             primary, secondary, method, conf, duration_sec, td_code = infer_energy_system(row["wod_text"], movements)
             rpe_value, rpe_method, rpe_conf = infer_rpe(row["rpe_source"], row["wod_text"], len(movements))
+            rpe_method = rpe_method or 'unknown'
+            rpe_conf = rpe_conf or 'low'
             conn.execute(
                 """
                 UPDATE daily_wods
