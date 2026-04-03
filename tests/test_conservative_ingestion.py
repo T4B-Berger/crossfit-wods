@@ -27,10 +27,28 @@ class ConservativeIngestionTests(unittest.TestCase):
         text = soup.get_text("\n", strip=True)
         self.assertEqual(classify_page(soup, text), "unknown")
 
+    def test_classify_page_detects_wod_in_main_layout(self) -> None:
+        html = """
+        <html><body><main>
+        <h2>Workout of the Day</h2>
+        <p>For Time</p>
+        <ul><li>21-15-9 reps of thruster (95 lb) and pull-up</li></ul>
+        </main></body></html>
+        """
+        soup = BeautifulSoup(html, "lxml")
+        text = soup.get_text("\n", strip=True)
+        self.assertEqual(classify_page(soup, text), "wod")
+
     def test_extract_wod_block_ambiguous_without_measure_or_movement(self) -> None:
         block, ambiguous = extract_wod_block("Warm-up\nFor Time\nGo hard")
         self.assertIsNotNone(block)
         self.assertTrue(ambiguous)
+
+    def test_extract_wod_block_can_start_on_reps_line(self) -> None:
+        raw_text = "Header\nGeneral info\n21-15-9 reps of thruster (95 lb) and pull-up\nShare"
+        block, ambiguous = extract_wod_block(raw_text)
+        self.assertIn("21-15-9", block or "")
+        self.assertFalse(ambiguous)
 
     def test_parse_one_sets_needs_review_on_ambiguous_wod(self) -> None:
         row = {

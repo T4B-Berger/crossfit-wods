@@ -16,6 +16,11 @@ REST_MARKERS = ("rest day", "restday")
 WOD_FORMAT_MARKERS = ("for time", "amrap", "emom", "tabata", "rounds for time")
 EDITORIAL_MARKERS = ("crossfit games", "nutrition", "podcast", "article", "opinion")
 WOD_STRUCTURE_RE = re.compile(r"(^|\s)(\d+(?:\s*[-x]\s*\d+)+|\d+\s*rounds?)", re.IGNORECASE)
+MOVEMENT_MARKERS = (
+    "squat", "deadlift", "clean", "jerk", "snatch", "thruster", "pull-up", "push-up",
+    "burpee", "run", "row", "double-under", "toes-to-bar", "muscle-up", "wall-ball",
+)
+WORKOUT_LABEL_MARKERS = ("workout of the day", "wod")
 
 
 @dataclass(slots=True)
@@ -61,14 +66,21 @@ def classify_page(soup: BeautifulSoup, text: str) -> str:
     low = text.lower()
     rest_hits = sum(1 for marker in REST_MARKERS if marker in low)
     format_hits = sum(1 for marker in WOD_FORMAT_MARKERS if marker in low)
-    structure_hits = len(soup.select("article ul li, article ol li, article h2, article h3"))
+    structure_hits = len(soup.select("article li, article h2, article h3, main li, main h2, main h3, main p"))
     wod_line_hits = sum(1 for line in text.splitlines() if WOD_STRUCTURE_RE.search(line))
     editorial_hits = sum(1 for marker in EDITORIAL_MARKERS if marker in low)
+    movement_hits = sum(1 for marker in MOVEMENT_MARKERS if marker in low)
+    workout_label_hits = sum(1 for marker in WORKOUT_LABEL_MARKERS if marker in low)
 
     if rest_hits and format_hits == 0:
         return "rest_day"
 
-    strong_wod_signal = (format_hits >= 2 or wod_line_hits >= 2) or (format_hits >= 1 and wod_line_hits >= 1)
+    strong_wod_signal = (
+        (format_hits >= 2 or wod_line_hits >= 2)
+        or (format_hits >= 1 and wod_line_hits >= 1)
+        or (format_hits >= 1 and movement_hits >= 2)
+        or (workout_label_hits >= 1 and movement_hits >= 2 and wod_line_hits >= 1)
+    )
     has_workout_structure = structure_hits >= 2
     if strong_wod_signal and has_workout_structure:
         return "wod"

@@ -24,6 +24,7 @@ DISTANCE_PATTERN = re.compile(
     r"\b(?P<value>\d+(?:\.\d+)?)\s?(?P<unit>m|meter|meters|metre|metres|km|mi|mile|miles|yd|yard|yards|ft|foot|feet)\b",
     re.IGNORECASE,
 )
+WOD_STRUCTURE_RE = re.compile(r"(^|\s)(\d+(?:\s*[-x]\s*\d+)+|\d+\s*rounds?)", re.IGNORECASE)
 STOP_BLOCK_MARKERS = ("related", "comments", "share", "podcast", "newsletter", "watch")
 
 
@@ -99,6 +100,12 @@ def extract_wod_block(raw_text: str) -> tuple[str | None, bool]:
         if any(pattern.search(line.lower()) for pattern in FORMAT_PATTERNS.values()):
             start_idx = idx
             break
+
+    if start_idx is None:
+        for idx, line in enumerate(lines):
+            if WOD_STRUCTURE_RE.search(line) and (extract_measurements(line) or detect_movements(line)):
+                start_idx = idx
+                break
 
     if start_idx is None:
         return None, True
